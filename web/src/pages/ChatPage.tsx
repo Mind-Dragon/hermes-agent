@@ -195,18 +195,31 @@ export default function ChatPage() {
       (ev) => {
         if (!ev.payload) return;
         const { tool_id, name, context } = ev.payload;
-        setEntries((list) => [
-          ...list,
-          {
-            kind: "tool",
-            id: `t-${tool_id}`,
-            tool_id,
-            name: name ?? "tool",
-            context,
-            status: "running",
-            startedAt: Date.now(),
-          },
-        ]);
+
+        // Insert tool rows BEFORE the current streaming assistant bubble so
+        // the transcript reads "user → tools → final message" rather than
+        // "empty bubble → tool → bubble filling in". If there's no streaming
+        // assistant (tool fired before message.start, or no message at all),
+        // append to the end.
+        const row: ToolEntry = {
+          kind: "tool",
+          id: `t-${tool_id}`,
+          tool_id,
+          name: name ?? "tool",
+          context,
+          status: "running",
+          startedAt: Date.now(),
+        };
+
+        setEntries((list) => {
+          for (let i = list.length - 1; i >= 0; i--) {
+            const e = list[i];
+            if (e.kind === "message" && e.role === "assistant" && e.streaming) {
+              return [...list.slice(0, i), row, ...list.slice(i)];
+            }
+          }
+          return [...list, row];
+        });
       },
     );
 
