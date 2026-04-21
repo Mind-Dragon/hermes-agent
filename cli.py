@@ -667,7 +667,7 @@ from cron import get_job
 
 # Resource cleanup imports for safe shutdown (terminal VMs, browser sessions)
 from tools.terminal_tool import cleanup_all_environments as _cleanup_all_terminals
-from tools.terminal_tool import set_sudo_password_callback, set_approval_callback, _get_approval_callback, _get_sudo_password_callback
+from tools.terminal_tool import set_sudo_password_callback, set_approval_callback, _get_approval_callback, _get_sudo_password_callback, clear_session_sudo_password
 from tools.skills_tool import set_secret_capture_callback
 from hermes_cli.callbacks import prompt_for_secret
 from tools.browser_tool import _emergency_cleanup_all_sessions as _cleanup_all_browsers
@@ -7860,13 +7860,16 @@ class HermesCLI:
             "Use your best judgement to make the choice and proceed."
         )
 
-    def _sudo_password_callback(self) -> str:
+    def _sudo_password_callback(self) -> str | None:
         """
         Prompt for sudo password through the prompt_toolkit UI.
-        
+
         Called from the agent thread when a sudo command is encountered.
         Uses the same clarify-style mechanism: sets UI state, waits on a
         queue for the user's response via the Enter key binding.
+
+        Returns the password string, "" for blank password (passwordless sudo),
+        or None if the user cancelled/skipped.
         """
         import time as _time
 
@@ -7888,10 +7891,12 @@ class HermesCLI:
                 self._sudo_deadline = 0
                 self._restore_modal_input_snapshot()
                 self._invalidate()
-                if result:
-                    _cprint(f"\n{_DIM}  ✓ Password received (cached for session){_RST}")
-                else:
+                if result is None:
                     _cprint(f"\n{_DIM}  ⏭ Skipped{_RST}")
+                elif result == "":
+                    _cprint(f"\n{_DIM}  ✓ Blank password (passwordless sudo){_RST}")
+                else:
+                    _cprint(f"\n{_DIM}  ✓ Password received (cached for session){_RST}")
                 return result
             except queue.Empty:
                 remaining = self._sudo_deadline - _time.monotonic()
@@ -7904,7 +7909,7 @@ class HermesCLI:
         self._restore_modal_input_snapshot()
         self._invalidate()
         _cprint(f"\n{_DIM}  ⏱ Timeout — continuing without sudo{_RST}")
-        return ""
+        return None
 
     def _approval_callback(self, command: str, description: str,
                            *, allow_permanent: bool = True) -> str:
@@ -8408,6 +8413,12 @@ class HermesCLI:
                     # Restore callbacks so test fixtures / single-query exits don't leak state.
                     set_approval_callback(previous_approval_cb)
                     set_sudo_password_callback(previous_sudo_cb)
+                    # Clear per-session sudo password cache so the next session
+                    # doesn't inherit a stale password from this turn.
+                    try:
+                        clear_session_sudo_password()
+                    except Exception:
+                        pass
 
             # Start agent in background thread (daemon so it cannot keep the
             # process alive when the user closes the terminal tab — SIGHUP
@@ -9396,7 +9407,7 @@ class HermesCLI:
 
             # Cancel sudo prompt
             if self._sudo_state:
-                self._sudo_state["response_queue"].put("")
+                self._sudo_state["response_queue"].put(None)
                 self._sudo_state = None
                 event.app.invalidate()
                 return
@@ -9473,7 +9484,7 @@ class HermesCLI:
                 event.app.invalidate()
                 return
             if self._sudo_state:
-                self._sudo_state["response_queue"].put("")
+                self._sudo_state["response_queue"].put(None)
                 self._sudo_state = None
                 event.app.invalidate()
                 return
@@ -10077,7 +10088,7 @@ class HermesCLI:
             if not state:
                 return []
             title = '🔐 Sudo Password Required'
-            body = 'Enter password below (hidden), or press Enter to skip'
+            body = 'Enter password below (hidden)\n• Enter = blank password (passwordless sudo)\n• ESC = skip'
             box_width = _panel_box_width(title, [body])
             lines = []
             lines.append(('class:sudo-border', '╭─ '))
@@ -10694,6 +10705,11 @@ class HermesCLI:
             set_sudo_password_callback(None)
             set_approval_callback(None)
             set_secret_capture_callback(None)
+            # Clear per-session sudo password cache
+            try:
+                clear_session_sudo_password()
+            except Exception:
+                pass
             # Close session in SQLite
             if hasattr(self, '_session_db') and self._session_db and self.agent:
                 try:

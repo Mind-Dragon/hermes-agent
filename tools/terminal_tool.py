@@ -108,8 +108,42 @@ def _check_disk_usage_warning():
         return False
 
 
-# Session-cached sudo password (persists until CLI exits)
-_cached_sudo_password: str = ""
+# Session-scoped sudo password cache (keyed by approval session key).
+# Empty string "" is a valid cached value for passwordless sudo systems.
+# None means "not cached yet".
+_session_sudo_passwords: dict[str, str | None] = {}
+
+
+def _get_cached_sudo_password() -> str | None:
+    """Return cached sudo password for the current session, or None if not cached."""
+    try:
+        from tools.approval import get_current_session_key
+        key = get_current_session_key(default="cli")
+    except Exception:
+        key = "cli"
+    return _session_sudo_passwords.get(key)
+
+
+def _set_cached_sudo_password(password: str | None) -> None:
+    """Cache sudo password for the current session."""
+    try:
+        from tools.approval import get_current_session_key
+        key = get_current_session_key(default="cli")
+    except Exception:
+        key = "cli"
+    _session_sudo_passwords[key] = password
+
+
+def clear_session_sudo_password(session_key: str = "") -> None:
+    """Remove cached sudo password for a given session (or current session if empty)."""
+    if not session_key:
+        try:
+            from tools.approval import get_current_session_key
+            session_key = get_current_session_key(default="cli")
+        except Exception:
+            session_key = "cli"
+    _session_sudo_passwords.pop(session_key, None)
+
 
 # Optional UI callbacks for interactive prompts. When set, these are called
 # instead of the default /dev/tty or input() readers. The CLI registers these
@@ -224,32 +258,33 @@ def _handle_sudo_failure(output: str, env_type: str) -> str:
     return output
 
 
-def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
+def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str | None:
     """
     Prompt user for sudo password with timeout.
-    
-    Returns the password if entered, or empty string if:
-    - User presses Enter without input (skip)
+
+    Returns the password if entered, or empty string "" for a blank password
+    (used on passwordless sudo systems), or None if:
+    - User explicitly cancels/skips
     - Timeout expires (45s default)
     - Any error occurs
-    
+
     Only works in interactive mode (HERMES_INTERACTIVE=1).
     If a _sudo_password_callback is registered (by the CLI), delegates to it
     so the prompt integrates with prompt_toolkit's UI.  Otherwise reads
     directly from /dev/tty with echo disabled.
     """
     import sys
-    
+
     # Use the registered callback when available (prompt_toolkit-compatible)
     _sudo_cb = _get_sudo_password_callback()
     if _sudo_cb is not None:
         try:
-            return _sudo_cb() or ""
+            return _sudo_cb()
         except Exception:
-            return ""
+            return None
 
     result = {"password": None, "done": False}
-    
+
     def read_password_thread():
         """Read password with echo disabled. Uses msvcrt on Windows, /dev/tty on Unix."""
         tty_fd = None
@@ -281,9 +316,9 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
                     chars.append(b)
                 result["password"] = b"".join(chars).decode("utf-8", errors="replace")
         except (EOFError, KeyboardInterrupt, OSError):
-            result["password"] = ""
+            result["password"] = None
         except Exception:
-            result["password"] = ""
+            result["password"] = None
         finally:
             if tty_fd is not None and old_attrs is not None:
                 try:
@@ -297,33 +332,36 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
                 except Exception as e:
                     logger.debug("Failed to close tty fd: %s", e)
             result["done"] = True
-    
+
     try:
         os.environ["HERMES_SPINNER_PAUSE"] = "1"
         time.sleep(0.2)
-        
+
         print()
         print("┌" + "─" * 58 + "┐")
         print("│  🔐 SUDO PASSWORD REQUIRED" + " " * 30 + "│")
         print("├" + "─" * 58 + "┤")
-        print("│  Enter password below (input is hidden), or:            │")
-        print("│    • Press Enter to skip (command fails gracefully)     │")
+        print("│  Enter password below (input is hidden):               │")
+        print("│    • Press Enter for blank password (passwordless sudo) │")
+        print("│    • Press Ctrl+C to skip                              │")
         print(f"│    • Wait {timeout_seconds}s to auto-skip" + " " * 27 + "│")
         print("└" + "─" * 58 + "┘")
         print()
         print("  Password (hidden): ", end="", flush=True)
-        
+
         password_thread = threading.Thread(target=read_password_thread, daemon=True)
         password_thread.start()
         password_thread.join(timeout=timeout_seconds)
-        
+
         if result["done"]:
-            password = result["password"] or ""
+            password = result["password"]
             print()  # newline after hidden input
-            if password:
-                print("  ✓ Password received (cached for this session)")
-            else:
+            if password is None:
                 print("  ⏭ Skipped - continuing without sudo")
+            elif password == "":
+                print("  ✓ Blank password (passwordless sudo)")
+            else:
+                print("  ✓ Password received (cached for this session)")
             print()
             sys.stdout.flush()
             return password
@@ -332,7 +370,7 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
             print("    (Press Enter to dismiss)")
             print()
             sys.stdout.flush()
-            return ""
+            return None
             
     except (EOFError, KeyboardInterrupt):
         print()
@@ -663,28 +701,27 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     If SUDO_PASSWORD is not set and NOT interactive:
       Command runs as-is (fails gracefully with "sudo: a password is required").
     """
-    global _cached_sudo_password
 
     if command is None:
         return None, None
+
     transformed, has_real_sudo = _rewrite_real_sudo_invocations(command)
     if not has_real_sudo:
         return command, None
 
     has_configured_password = "SUDO_PASSWORD" in os.environ
-    sudo_password = os.environ.get("SUDO_PASSWORD", "") if has_configured_password else _cached_sudo_password
+    sudo_password = os.environ.get("SUDO_PASSWORD", "") if has_configured_password else _get_cached_sudo_password()
 
-    if not has_configured_password and not sudo_password and os.getenv("HERMES_INTERACTIVE"):
+    if not has_configured_password and sudo_password is None and os.getenv("HERMES_INTERACTIVE"):
         sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
-        if sudo_password:
-            _cached_sudo_password = sudo_password
+        if sudo_password is not None:
+            _set_cached_sudo_password(sudo_password)
 
-    if has_configured_password or sudo_password:
+    if has_configured_password or sudo_password is not None:
         # Trailing newline is required: sudo -S reads one line for the password.
         return transformed, sudo_password + "\n"
 
     return command, None
-
 
 # Environment classes now live in tools/environments/
 from tools.environments.local import LocalEnvironment as _LocalEnvironment
