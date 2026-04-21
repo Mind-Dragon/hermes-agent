@@ -254,3 +254,82 @@ class TestCliApprovalUi:
 
         # Command got truncated with a marker.
         assert "(command truncated" in rendered
+
+
+class TestCliApprovalThreadLocalWiring:
+    """Regression: after commit 62348cff callbacks are thread-local, so the
+    agent thread must register them itself.  Otherwise _get_approval_callback()
+    returns None inside the agent thread and prompt_dangerous_approval falls
+    back to input(), which deadlocks inside prompt_toolkit's TUI loop."""
+
+    def test_chat_run_agent_sets_approval_callback_on_worker_thread(self):
+        import cli as cli_module
+        from tools.terminal_tool import (
+            set_approval_callback,
+            _get_approval_callback,
+        )
+
+        clean_config = {
+            "model": {
+                "default": "anthropic/claude-opus-4.6",
+                "base_url": "https://openrouter.ai/api/v1",
+                "provider": "auto",
+            },
+            "display": {"compact": False, "tool_progress": "all"},
+            "agent": {},
+            "terminal": {"env_type": "local"},
+        }
+
+        captured_callbacks = []
+        original_thread_cls = threading.Thread
+
+        class _InterceptThread(original_thread_cls):
+            def __init__(self, target=None, *args, **kwargs):
+                super().__init__(target=target, *args, **kwargs)
+                self._captured_target = target
+
+            def start(self):
+                # Run synchronously so we can inspect TLS in the same call stack
+                if self._captured_target:
+                    self._captured_target()
+
+        with patch("cli.get_tool_definitions", return_value=[]), patch.dict(
+            "os.environ", {"LLM_MODEL": "", "HERMES_MAX_ITERATIONS": ""}, clear=False
+        ), patch.dict(cli_module.__dict__, {"CLI_CONFIG": clean_config}), patch(
+            "threading.Thread", _InterceptThread
+        ):
+            cli_obj = HermesCLI()
+            cli_obj._app = None  # TUI not running in this test
+
+            def fake_run_conversation(**kwargs):
+                captured_callbacks.append(_get_approval_callback())
+                return {"final_response": "ok", "messages": [], "api_calls": 0, "completed": True}
+
+            cli_obj.agent = type("FakeAgent", (), {"run_conversation": fake_run_conversation})()
+            cli_obj.conversation_history = []
+            cli_obj.session_id = "test-session"
+            cli_obj.model = "anthropic/claude-opus-4.6"
+            cli_obj.base_url = "https://openrouter.ai/api/v1"
+            cli_obj.api_key = "fake-key"
+            cli_obj._active_agent_route_signature = "fake-sig"
+            cli_obj._resolve_turn_agent_config = lambda _msg: {
+                "signature": "fake-sig",
+                "model": None,
+                "runtime": None,
+            }
+            cli_obj._init_agent = lambda **kwargs: True
+            cli_obj._ensure_runtime_credentials = lambda: True
+            cli_obj._render_user_input = lambda _msg: None
+
+            with patch.object(cli_module, "_cprint"):
+                cli_obj.chat("hello")
+
+        assert len(captured_callbacks) == 1
+        assert captured_callbacks[0] is cli_obj._approval_callback, (
+            "_approval_callback must be visible inside the agent thread; "
+            "otherwise the CLI approval prompt deadlocks"
+        )
+
+        # Clean up global state leaked by the synchronous run
+        set_approval_callback(None)
+        set_sudo_password_callback(None)
