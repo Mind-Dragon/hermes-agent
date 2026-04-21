@@ -13,6 +13,7 @@ Usage:
     python cli.py --list-tools             # List available tools and exit
 """
 
+import errno
 import logging
 import os
 import shutil
@@ -33,6 +34,90 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _is_terminal_disconnect_error(exc: BaseException | None) -> bool:
+    """Return True for expected stdio/tty teardown errors during shutdown.
+
+    The classic prompt_toolkit CLI can lose its controlling terminal before the
+    event loop fully unwinds (SSH disconnect, SIGHUP/SIGTERM from a supervisor,
+    parent PTY teardown).  In that window prompt_toolkit may still try to
+    redraw/reset and hit stdout/stderr errors like ``EIO`` (macOS ``Input/output
+    error``), ``EPIPE``/``BrokenPipeError``, ``EBADF``, or ``ValueError: I/O
+    operation on closed file``.  These are expected terminal-loss conditions,
+    not actionable crashes.
+    """
+    if exc is None:
+        return False
+    if isinstance(exc, BrokenPipeError):
+        return True
+    if isinstance(exc, OSError) and getattr(exc, "errno", None) in {
+        errno.EIO,
+        errno.EPIPE,
+        errno.EBADF,
+    }:
+        return True
+    text = str(exc).lower()
+    return (
+        "input/output error" in text
+        or "broken pipe" in text
+        or "bad file descriptor" in text
+        or "i/o operation on closed file" in text
+    )
+
+
+def _should_suppress_cli_asyncio_exception(loop, context: dict[str, Any]) -> bool:
+    """Return True for known-benign asyncio noise during CLI teardown.
+
+    We still route everything else to ``loop.default_exception_handler`` so real
+    bugs remain visible.
+    """
+    exc = context.get("exception")
+    if isinstance(exc, RuntimeError) and "Event loop is closed" in str(exc):
+        return True
+    if isinstance(exc, RuntimeError) and "aclose(): asynchronous generator is already running" in str(exc):
+        return True
+    if isinstance(exc, KeyError) and "is not registered" in str(exc):
+        return True
+    if _is_terminal_disconnect_error(exc):
+        return True
+
+    message = str(context.get("message") or "")
+    if "Task was destroyed but it is pending!" not in message:
+        return False
+
+    task_repr = " ".join(
+        str(context.get(key) or "")
+        for key in ("task", "future", "handle", "source_traceback")
+    )
+    return (
+        "run_in_terminal" in task_repr
+        or "prompt_toolkit.application" in task_repr
+        or "in_terminal" in task_repr
+    )
+
+
+def _request_cli_exit_on_signal(app, signum: int, agent=None, agent_running: bool = False) -> bool:
+    """Best-effort graceful exit path for SIGHUP/SIGTERM in classic CLI mode.
+
+    Returns True when prompt_toolkit accepted an ``app.exit(exception=EOFError())``
+    request, allowing the caller to avoid injecting ``KeyboardInterrupt`` into an
+    arbitrary redraw/reset stack frame.
+    """
+    if agent is not None and agent_running:
+        agent.interrupt(f"received signal {signum}")
+        try:
+            grace = float(os.getenv("HERMES_SIGTERM_GRACE", "1.5"))
+        except (TypeError, ValueError):
+            grace = 1.5
+        if grace > 0:
+            time.sleep(grace)
+
+    if getattr(app, "is_running", False):
+        app.exit(exception=EOFError())
+        return True
+    return False
+
 
 # Suppress startup messages for clean CLI experience
 os.environ["HERMES_QUIET"] = "1"  # Our own modules
@@ -10565,22 +10650,23 @@ class HermesCLI:
             spawned with ``os.setsid`` and therefore survives as an orphan
             with PPID=1.
 
-            Grace window (``HERMES_SIGTERM_GRACE``, default 1.5 s) gives
-            the daemon time to: detect the interrupt (next 200 ms poll) →
-            call _kill_process (SIGTERM + 1 s wait + SIGKILL if needed) →
-            return from _wait_for_process.  ``time.sleep`` releases the
-            GIL so the daemon actually runs during the window.
+            After the grace window, prefer ``app.exit(exception=EOFError())``
+            over raising ``KeyboardInterrupt`` directly.  ``KeyboardInterrupt``
+            makes prompt_toolkit unwind through its redraw/reset path, which can
+            still flush stdout after the controlling PTY has disappeared and
+            trigger ``OSError: [Errno 5] Input/output error`` on macOS.  Asking
+            the application to exit with EOFError follows the same user-visible
+            shutdown path without the redraw-on-dead-tty crash.
             """
             logger.debug("Received signal %s, triggering graceful shutdown", signum)
             try:
-                if getattr(self, "agent", None) and getattr(self, "_agent_running", False):
-                    self.agent.interrupt(f"received signal {signum}")
-                    try:
-                        _grace = float(os.getenv("HERMES_SIGTERM_GRACE", "1.5"))
-                    except (TypeError, ValueError):
-                        _grace = 1.5
-                    if _grace > 0:
-                        time.sleep(_grace)
+                if _request_cli_exit_on_signal(
+                    app,
+                    signum,
+                    agent=getattr(self, "agent", None),
+                    agent_running=getattr(self, "_agent_running", False),
+                ):
+                    return
             except Exception:
                 pass  # never block signal handling
             raise KeyboardInterrupt()
@@ -10593,19 +10679,14 @@ class HermesCLI:
         except Exception:
             pass  # Signal handlers may fail in restricted environments
         
-        # Install a custom asyncio exception handler that suppresses the
-        # "Event loop is closed" RuntimeError from httpx transport cleanup
-        # and the "0 is not registered" KeyError from broken stdin (#6393).
-        # The RuntimeError fix is defense-in-depth — the primary fix is
-        # neuter_async_httpx_del which disables __del__ entirely.  The
-        # KeyError fix handles macOS + uv-managed Python environments where
-        # fd 0 is not reliably available to the asyncio selector.
+        # Install a custom asyncio exception handler that suppresses known-benign
+        # shutdown noise: cached httpx cleanup on a closed loop, selector
+        # registration failures from broken stdin (#6393), and prompt_toolkit
+        # redraw/reset errors after the controlling terminal has already
+        # disappeared (SSH disconnect, SIGHUP/SIGTERM, parent PTY teardown).
         def _suppress_closed_loop_errors(loop, context):
-            exc = context.get("exception")
-            if isinstance(exc, RuntimeError) and "Event loop is closed" in str(exc):
-                return  # silently suppress
-            if isinstance(exc, KeyError) and "is not registered" in str(exc):
-                return  # suppress selector registration failures (#6393)
+            if _should_suppress_cli_asyncio_exception(loop, context):
+                return  # silently suppress expected shutdown noise
             # Fall back to default handler for everything else
             loop.default_exception_handler(context)
 
@@ -10637,10 +10718,13 @@ class HermesCLI:
                 app.run()
         except (EOFError, KeyboardInterrupt, BrokenPipeError):
             pass
-        except (KeyError, OSError) as _stdin_err:
-            # Catch selector registration failures from broken stdin (#6393).
-            # This is the fallback for cases that slip past the fstat() guard.
-            if "is not registered" in str(_stdin_err) or "Bad file descriptor" in str(_stdin_err):
+        except (KeyError, OSError, ValueError) as _stdin_err:
+            # Catch selector registration failures from broken stdin (#6393)
+            # plus terminal disconnect teardown (macOS EIO / closed stdio) so
+            # prompt_toolkit shutdown doesn't explode when the PTY disappears.
+            if _is_terminal_disconnect_error(_stdin_err):
+                pass
+            elif "is not registered" in str(_stdin_err) or "Bad file descriptor" in str(_stdin_err):
                 print(
                     f"\nError: stdin is not usable ({_stdin_err}).\n"
                     "This can happen with certain Python installations (e.g. uv-managed cPython on macOS).\n"
