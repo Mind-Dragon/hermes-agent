@@ -667,7 +667,7 @@ from cron import get_job
 
 # Resource cleanup imports for safe shutdown (terminal VMs, browser sessions)
 from tools.terminal_tool import cleanup_all_environments as _cleanup_all_terminals
-from tools.terminal_tool import set_sudo_password_callback, set_approval_callback
+from tools.terminal_tool import set_sudo_password_callback, set_approval_callback, _get_approval_callback, _get_sudo_password_callback
 from tools.skills_tool import set_secret_capture_callback
 from hermes_cli.callbacks import prompt_for_secret
 from tools.browser_tool import _emergency_cleanup_all_sessions as _cleanup_all_browsers
@@ -8374,6 +8374,8 @@ class HermesCLI:
                 # Register terminal-tool callbacks on the agent thread so
                 # approval / sudo prompts work inside prompt_toolkit's TUI loop.
                 # (These are thread-local since commit 62348cff.)
+                previous_approval_cb = _get_approval_callback()
+                previous_sudo_cb = _get_sudo_password_callback()
                 set_approval_callback(self._approval_callback)
                 set_sudo_password_callback(self._sudo_password_callback)
 
@@ -8403,9 +8405,9 @@ class HermesCLI:
                         "error": _summary,
                     }
                 finally:
-                    # Unregister callbacks so test fixtures / single-query exits don't leak state.
-                    set_approval_callback(None)
-                    set_sudo_password_callback(None)
+                    # Restore callbacks so test fixtures / single-query exits don't leak state.
+                    set_approval_callback(previous_approval_cb)
+                    set_sudo_password_callback(previous_sudo_cb)
 
             # Start agent in background thread (daemon so it cannot keep the
             # process alive when the user closes the terminal tab — SIGHUP

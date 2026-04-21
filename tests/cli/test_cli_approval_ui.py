@@ -267,6 +267,7 @@ class TestCliApprovalThreadLocalWiring:
         from tools.terminal_tool import (
             set_approval_callback,
             _get_approval_callback,
+            set_sudo_password_callback,
         )
 
         clean_config = {
@@ -287,21 +288,30 @@ class TestCliApprovalThreadLocalWiring:
             def __init__(self, target=None, *args, **kwargs):
                 super().__init__(target=target, *args, **kwargs)
                 self._captured_target = target
+                self._started = False
+                self._done = False
 
             def start(self):
-                # Run synchronously so we can inspect TLS in the same call stack
+                self._started = True
                 if self._captured_target:
                     self._captured_target()
+                self._done = True
+
+            def join(self, timeout=None):
+                return
+
+            def is_alive(self):
+                return self._started and not self._done
 
         with patch("cli.get_tool_definitions", return_value=[]), patch.dict(
             "os.environ", {"LLM_MODEL": "", "HERMES_MAX_ITERATIONS": ""}, clear=False
         ), patch.dict(cli_module.__dict__, {"CLI_CONFIG": clean_config}), patch(
-            "threading.Thread", _InterceptThread
+            "cli.threading.Thread", _InterceptThread
         ):
             cli_obj = HermesCLI()
             cli_obj._app = None  # TUI not running in this test
 
-            def fake_run_conversation(**kwargs):
+            def fake_run_conversation(self, **kwargs):
                 captured_callbacks.append(_get_approval_callback())
                 return {"final_response": "ok", "messages": [], "api_calls": 0, "completed": True}
 
@@ -325,7 +335,7 @@ class TestCliApprovalThreadLocalWiring:
                 cli_obj.chat("hello")
 
         assert len(captured_callbacks) == 1
-        assert captured_callbacks[0] is cli_obj._approval_callback, (
+        assert captured_callbacks[0] == cli_obj._approval_callback, (
             "_approval_callback must be visible inside the agent thread; "
             "otherwise the CLI approval prompt deadlocks"
         )
