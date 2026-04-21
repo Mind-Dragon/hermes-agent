@@ -106,3 +106,17 @@ def test_request_cli_exit_on_signal_falls_back_when_app_not_running(cli_mod, mon
     assert exited is False
     agent.interrupt.assert_called_once_with("received signal 15")
     app.exit.assert_not_called()
+
+
+def test_request_cli_exit_on_signal_still_exits_when_interrupt_fails(cli_mod, monkeypatch):
+    app = Mock(is_running=True)
+    agent = Mock()
+    agent.interrupt.side_effect = RuntimeError("boom")
+    monkeypatch.setenv("HERMES_SIGTERM_GRACE", "0")
+
+    exited = cli_mod._request_cli_exit_on_signal(app, 15, agent=agent, agent_running=True)
+
+    assert exited is True
+    agent.interrupt.assert_called_once_with("received signal 15")
+    app.exit.assert_called_once()
+    assert isinstance(app.exit.call_args.kwargs["exception"], EOFError)

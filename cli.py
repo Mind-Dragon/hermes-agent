@@ -105,13 +105,19 @@ def _request_cli_exit_on_signal(app, signum: int, agent=None, agent_running: boo
     arbitrary redraw/reset stack frame.
     """
     if agent is not None and agent_running:
-        agent.interrupt(f"received signal {signum}")
         try:
-            grace = float(os.getenv("HERMES_SIGTERM_GRACE", "1.5"))
-        except (TypeError, ValueError):
-            grace = 1.5
-        if grace > 0:
-            time.sleep(grace)
+            agent.interrupt(f"received signal {signum}")
+            try:
+                grace = float(os.getenv("HERMES_SIGTERM_GRACE", "1.5"))
+            except (TypeError, ValueError):
+                grace = 1.5
+            if grace > 0:
+                time.sleep(grace)
+        except Exception:
+            logger.debug(
+                "Best-effort agent interrupt during signal shutdown failed",
+                exc_info=True,
+            )
 
     if getattr(app, "is_running", False):
         app.exit(exception=EOFError())
