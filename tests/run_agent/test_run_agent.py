@@ -143,6 +143,40 @@ def test_aiagent_reuses_existing_errors_log_handler():
             root_logger.addHandler(handler)
 
 
+def test_apply_ephemeral_api_messages_keeps_recovery_prompt_out_of_session(agent):
+    session_messages = [{"role": "user", "content": "debug this"}]
+    recovery_prompt = "[GUARDRAIL_RECOVERY] switch away from execute_code"
+    agent._task_preserve_msg = {"role": "system", "content": "[TASK_STATE_PRESERVE] keep task"}
+    agent.prefill_messages = [{"role": "assistant", "content": "prefill"}]
+    agent._guardrails = SimpleNamespace(
+        build_recovery_message=lambda: {"role": "system", "content": recovery_prompt},
+        filter_tools_for_api=lambda tools: tools,
+    )
+
+    api_messages = [{"role": "system", "content": "base system"}] + list(session_messages)
+    injected = agent._apply_ephemeral_api_messages(api_messages, "base system")
+
+    assert session_messages == [{"role": "user", "content": "debug this"}]
+    assert all(m.get("content") != recovery_prompt for m in session_messages)
+    assert any(m.get("content") == recovery_prompt for m in injected)
+    assert any(m.get("content") == "[TASK_STATE_PRESERVE] keep task" for m in injected)
+    assert any(m.get("content") == "prefill" for m in injected)
+
+
+def test_tools_for_api_call_hides_temporarily_blocked_tools(agent):
+    agent.tools = _make_tool_defs("execute_code", "terminal", "read_file")
+    agent._guardrails = SimpleNamespace(
+        filter_tools_for_api=lambda tools: [
+            tool for tool in tools
+            if tool.get("function", {}).get("name") != "execute_code"
+        ]
+    )
+
+    visible = agent._tools_for_api_call()
+    names = [tool["function"]["name"] for tool in visible]
+    assert names == ["terminal", "read_file"]
+
+
 class TestProviderModelNormalization:
     def test_aiagent_strips_matching_native_provider_prefix(self):
         with (

@@ -1,7 +1,7 @@
 """Tool Loop Detector — prevents infinite retry loops in tool execution.
 
 This module implements the detection heuristic from the crash RCA:
-- Same tool call pattern repeats >3 times
+- Same tool call pattern repeats 3 times consecutively
 - Each result contains `"success": false`
 - No variation in arguments between calls
 
@@ -23,11 +23,26 @@ class ToolLoopError(Exception):
 
     Contains diagnostic information about the loop for the agent to report.
     """
-    def __init__(self, tool_name: str, loop_count: int, last_error: str, suggestion: str):
+    def __init__(
+        self,
+        tool_name: str,
+        loop_count: int,
+        last_error: str,
+        suggestion: str,
+        *,
+        recoverable: bool = False,
+        blocked_tools: Optional[List[str]] = None,
+        recovery_prompt: Optional[str] = None,
+        failure_kind: str = "generic_tool_loop",
+    ):
         self.tool_name = tool_name
         self.loop_count = loop_count
         self.last_error = last_error
         self.suggestion = suggestion
+        self.recoverable = recoverable
+        self.blocked_tools = list(blocked_tools or [])
+        self.recovery_prompt = recovery_prompt
+        self.failure_kind = failure_kind
         super().__init__(
             f"Tool loop detected: {tool_name} failed {loop_count} times consecutively. "
             f"Last error: {last_error}. {suggestion}"
@@ -72,10 +87,18 @@ class ToolLoopDetector:
             canonical = str(args)
         return hashlib.sha256(f"{tool_name}:{canonical}".encode()).hexdigest()[:16]
 
-    def _extract_error(self, result: str) -> Optional[str]:
-        """Extract error message from tool result JSON."""
+    def _parse_result(self, result: str) -> Optional[Dict[str, Any]]:
+        """Parse a tool result JSON blob when possible."""
         try:
             data = json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _extract_error(self, result: str) -> Optional[str]:
+        """Extract error message from tool result JSON."""
+        data = self._parse_result(result)
+        if data is not None:
             # Explicit success: false
             if not data.get("success", True):
                 return data.get("error", "Unknown error")
@@ -84,11 +107,63 @@ class ToolLoopDetector:
             if "error" in data and data["error"]:
                 return str(data["error"])
             return None
-        except (json.JSONDecodeError, TypeError):
-            # Non-JSON result — treat as success unless it contains "error"
-            if isinstance(result, str) and "error" in result.lower() and len(result) < 500:
-                return result
-            return None
+        # Non-JSON result — treat as success unless it contains "error"
+        if isinstance(result, str) and "error" in result.lower() and len(result) < 500:
+            return result
+        return None
+
+    def _build_recovery_plan(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        result: str,
+        last_error: str,
+    ) -> Dict[str, Any]:
+        """Classify a loop and propose a one-shot autonomous recovery plan."""
+        parsed = self._parse_result(result) or {}
+        output = str(parsed.get("output") or "")
+        error_text = f"{last_error}\n{output}".lower()
+        tool_calls_made = parsed.get("tool_calls_made")
+
+        if (
+            tool_name == "execute_code"
+            and tool_calls_made == 0
+            and "syntaxerror" in error_text
+        ):
+            return {
+                "failure_kind": "execute_code_compile_error",
+                "recoverable": True,
+                "blocked_tools": ["execute_code"],
+                "recovery_prompt": (
+                    "[GUARDRAIL_RECOVERY]\n"
+                    "The previous execute_code attempt failed before any Hermes tool ran. "
+                    "The sandbox Python script did not compile (compile-time SyntaxError / unterminated string literal). "
+                    "Do not use execute_code for this recovery attempt. Do not retry the same heredoc-in-string pattern. "
+                    "Recover autonomously using a different strategy: prefer direct read_file/search_files/patch/terminal calls, "
+                    "or write a temporary helper file and run it with terminal if you truly need Python. "
+                    "Do not ask the user for instructions yet unless this recovery attempt also fails."
+                ),
+                "suggestion": (
+                    "The generated execute_code script failed to compile before any Hermes tools ran. "
+                    "Switch away from execute_code and use direct tools or a temporary script file via terminal."
+                ),
+            }
+
+        return {
+            "failure_kind": "generic_tool_loop",
+            "recoverable": True,
+            "blocked_tools": [tool_name],
+            "recovery_prompt": (
+                "[GUARDRAIL_RECOVERY]\n"
+                f"The last approach got stuck in repeated {tool_name} failures. "
+                f"Do not call {tool_name} again on the next attempt. Inspect the last error, change strategy, "
+                "and recover autonomously with a different tool, lane, or decomposition. "
+                "Only release to the user for instructions if this recovery attempt also fails."
+            ),
+            "suggestion": (
+                f"Do not call {tool_name} again immediately. Inspect the failure and switch to a different strategy first."
+            ),
+        }
 
     def observe(self, tool_name: str, args: Dict[str, Any], result: str) -> None:
         """Record a tool call and check for loops.
@@ -131,32 +206,42 @@ class ToolLoopDetector:
 
                 if all_same_args and all_failed:
                     last_error = recent[-1].result_error or "Unknown error"
+                    recovery = self._build_recovery_plan(
+                        tool_name,
+                        args,
+                        result,
+                        last_error,
+                    )
                     raise ToolLoopError(
                         tool_name=tool_name,
                         loop_count=len(recent),
                         last_error=last_error,
-                        suggestion=(
-                            f"The same {tool_name} call with identical arguments failed "
-                            f"{len(recent)} times. Last error: {last_error}. "
-                            f"Halting to prevent infinite loop. Please check the error "
-                            f"and try a different approach, or ask the user for guidance."
-                        ),
+                        suggestion=recovery["suggestion"],
+                        recoverable=recovery["recoverable"],
+                        blocked_tools=recovery["blocked_tools"],
+                        recovery_prompt=recovery["recovery_prompt"],
+                        failure_kind=recovery["failure_kind"],
                     )
 
             # Check total failures (even with varying args)
             if self._failure_counts.get(tool_name, 0) >= self.MAX_TOTAL_FAILURES:
                 recent_same = [r for r in self._history if r.tool_name == tool_name][-self.MAX_TOTAL_FAILURES:]
                 last_error = recent_same[-1].result_error or "Unknown error"
+                recovery = self._build_recovery_plan(
+                    tool_name,
+                    args,
+                    result,
+                    last_error,
+                )
                 raise ToolLoopError(
                     tool_name=tool_name,
                     loop_count=self._failure_counts[tool_name],
                     last_error=last_error,
-                    suggestion=(
-                        f"{tool_name} has failed {self._failure_counts[tool_name]} times "
-                        f"in this session. Last error: {last_error}. "
-                        f"Halting to prevent resource waste. Consider using a different "
-                        f"tool or asking the user for clarification."
-                    ),
+                    suggestion=recovery["suggestion"],
+                    recoverable=recovery["recoverable"],
+                    blocked_tools=recovery["blocked_tools"],
+                    recovery_prompt=recovery["recovery_prompt"],
+                    failure_kind=recovery["failure_kind"],
                 )
         else:
             # Reset consecutive counter on success
