@@ -547,6 +547,11 @@ def build_session_key(
     return ":".join(key_parts)
 
 
+# Minimum interval between session resets for the same session_key.
+# Prevents rapid empty-session creation when events arrive during reset.
+_MIN_SESSION_RESET_INTERVAL = 30  # seconds
+
+
 class SessionStore:
     """
     Manages session storage and retrieval.
@@ -563,6 +568,7 @@ class SessionStore:
         self._loaded = False
         self._lock = threading.Lock()
         self._has_active_processes_fn = has_active_processes_fn
+        self._last_reset_times = {}  # session_key -> monotonic timestamp
         
         # Initialize SQLite session database
         self._db = None
@@ -785,6 +791,20 @@ class SessionStore:
                     self._save()
                     return entry
                 else:
+                    # Cooldown: don't auto-reset the same key too fast.
+                    import time as _time
+                    _now_mono = _time.monotonic()
+                    _last = self._last_reset_times.get(session_key, 0)
+                    if (_now_mono - _last) < _MIN_SESSION_RESET_INTERVAL:
+                        logger.info(
+                            "Session reset cooldown for %s (%.0fs remaining)",
+                            session_key[:16],
+                            _MIN_SESSION_RESET_INTERVAL - (_now_mono - _last),
+                        )
+                        entry.updated_at = now
+                        self._save()
+                        return entry
+                    self._last_reset_times[session_key] = _now_mono
                     # Session is being auto-reset.
                     was_auto_reset = True
                     auto_reset_reason = reset_reason

@@ -8979,6 +8979,7 @@ class AIAgent:
                 self._persist_session(messages, conversation_history)
                 return {
                     "final_response": None,
+                    "_turn_exit_reason": "guardrail_halt",
                     "messages": messages,
                     "api_calls": api_call_count,
                     "completed": False,
@@ -11429,6 +11430,7 @@ class AIAgent:
                         self._persist_session(messages, conversation_history)
                         return {
                             "final_response": None,
+                            "_turn_exit_reason": "guardrail_halt",
                             "messages": messages,
                             "api_calls": api_call_count,
                             "completed": False,

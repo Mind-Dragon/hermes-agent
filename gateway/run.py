@@ -4613,6 +4613,18 @@ class GatewayRunner:
             # Persisting it would make the session even larger, causing the
             # same failure on the next attempt — an infinite loop. (#1630, #9893)
             agent_failed_early = bool(agent_result.get("failed"))
+
+            # Guardrail halts are NOT session failures — the session is still valid.
+            # Skip auto-reset and transcript-skipping so the user can continue.
+            _is_guardrail_halt = agent_result.get("_turn_exit_reason") == "guardrail_halt"
+            if _is_guardrail_halt:
+                if not response:
+                    response = (
+                        f"Guardrail halted: {str(agent_result.get('error', 'Tool loop detected'))[:500]}\n"
+                        f"\nThe current approach is stuck. Try a different method."
+                    )
+                agent_failed_early = False
+
             if agent_failed_early:
                 logger.info(
                     "Skipping transcript persistence for failed request in "
@@ -4624,7 +4636,7 @@ class GatewayRunner:
             # large to process.  Auto-reset it so the next message starts
             # fresh instead of replaying the same oversized context in an
             # infinite fail loop.  (#9893)
-            if agent_result.get("compression_exhausted") and session_entry and session_key:
+            if not _is_guardrail_halt and agent_result.get("compression_exhausted") and session_entry and session_key:
                 logger.info(
                     "Auto-resetting session %s after compression exhaustion.",
                     session_entry.session_id,
