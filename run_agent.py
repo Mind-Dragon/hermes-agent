@@ -7121,8 +7121,38 @@ class AIAgent:
                     content[-1]["cache_control"] = {"type": "ephemeral"}
                 break
 
+    def _apply_ephemeral_api_messages(self, api_messages: list, effective_system: str) -> list:
+        """Inject API-only guidance that must not persist into the session transcript."""
+        injected = list(api_messages)
+        insert_at = 1 if effective_system else 0
+
+        if getattr(self, "_task_preserve_msg", None):
+            injected.insert(insert_at, self._task_preserve_msg.copy())
+            insert_at += 1
+
+        if self._guardrails:
+            recovery_msg = self._guardrails.build_recovery_message()
+            if recovery_msg:
+                existing = {msg.get("content") for msg in injected if msg.get("role") == "system"}
+                if recovery_msg.get("content") not in existing:
+                    injected.insert(insert_at, recovery_msg.copy())
+                    insert_at += 1
+
+        if self.prefill_messages:
+            for idx, pfm in enumerate(self.prefill_messages):
+                injected.insert(insert_at + idx, pfm.copy())
+
+        return injected
+
+    def _tools_for_api_call(self) -> Optional[list]:
+        """Return the visible tool surface for the next API call."""
+        if self._guardrails:
+            return self._guardrails.filter_tools_for_api(self.tools)
+        return self.tools
+
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
+        tools_for_api = self._tools_for_api_call()
         if self.api_mode == "anthropic_messages":
             _transport = self._get_transport()
             anthropic_messages = self._prepare_anthropic_messages_for_api(api_messages)
@@ -7134,7 +7164,7 @@ class AIAgent:
             return _transport.build_kwargs(
                 model=self.model,
                 messages=anthropic_messages,
-                tools=self.tools,
+                tools=tools_for_api,
                 max_tokens=ephemeral_out if ephemeral_out is not None else self.max_tokens,
                 reasoning_config=self.reasoning_config,
                 is_oauth=self._is_anthropic_oauth,
@@ -7153,7 +7183,7 @@ class AIAgent:
             return _bt.build_kwargs(
                 model=self.model,
                 messages=api_messages,
-                tools=self.tools,
+                tools=tools_for_api,
                 max_tokens=self.max_tokens or 4096,
                 region=region,
                 guardrail_config=guardrail,
@@ -7176,7 +7206,7 @@ class AIAgent:
             return _ct.build_kwargs(
                 model=self.model,
                 messages=api_messages,
-                tools=self.tools,
+                tools=tools_for_api,
                 reasoning_config=self.reasoning_config,
                 session_id=getattr(self, "session_id", None),
                 max_tokens=self.max_tokens,
@@ -7257,7 +7287,7 @@ class AIAgent:
         return _ct.build_kwargs(
             model=self.model,
             messages=api_messages,
-            tools=self.tools,
+            tools=tools_for_api,
             timeout=self._resolved_api_call_timeout(),
             max_tokens=self.max_tokens,
             ephemeral_max_output_tokens=_ephemeral_out,
@@ -9437,19 +9467,8 @@ class AIAgent:
             if effective_system:
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
 
-            # Inject task preservation message (ephemeral, API-call-time only).
-            # Placed right after system prompt so context compression treats it
-            # as protected system content — survives compaction.
-            if getattr(self, "_task_preserve_msg", None):
-                sys_offset = 1 if effective_system else 0
-                api_messages.insert(sys_offset, self._task_preserve_msg.copy())
-
-            # Inject ephemeral prefill messages right after the system prompt
-            # but before conversation history. Same API-call-time-only pattern.
-            if self.prefill_messages:
-                sys_offset = 1 if effective_system else 0
-                for idx, pfm in enumerate(self.prefill_messages):
-                    api_messages.insert(sys_offset + idx, pfm.copy())
+            # Inject task-preservation / recovery / prefill messages at API-call time only.
+            api_messages = self._apply_ephemeral_api_messages(api_messages, effective_system)
 
             # Apply Anthropic prompt caching for Claude models on native
             # Anthropic, OpenRouter, and third-party Anthropic-compatible
@@ -11672,14 +11691,23 @@ class AIAgent:
                                             msg.get("content", "{}"),
                                         )
                                     except ToolLoopError as loop_err:
-                                        # Loop detected — halt the conversation
-                                        self._vprint(f"{self.log_prefix}🛑 Guardrail halt: {loop_err}", force=True)
-                                        _turn_exit_reason = "guardrail_halt"
+                                        if self._guardrails.try_autonomous_recovery(loop_err):
+                                            self._vprint(
+                                                f"{self.log_prefix}↻ Guardrail caught a loop — retrying with a different strategy.",
+                                                force=True,
+                                            )
+                                            self._emit_status(
+                                                "↻ Guardrail caught a loop — retrying with a different strategy"
+                                            )
+                                            _turn_exit_reason = "guardrail_recovery"
+                                        else:
+                                            self._vprint(f"{self.log_prefix}🛑 Guardrail halt: {loop_err}", force=True)
+                                            _turn_exit_reason = "guardrail_halt"
                                         break
                                     except Exception:
                                         pass
                                     break
-                            if _turn_exit_reason == "guardrail_halt":
+                            if _turn_exit_reason in {"guardrail_halt", "guardrail_recovery"}:
                                 break
 
                     # Reset per-turn retry counters after successful tool
@@ -11714,7 +11742,14 @@ class AIAgent:
                             "partial": True,
                             "error": self._guardrails.get_stats().get("halt_reason", "Guardrail halted the session") if self._guardrails else "Guardrail halted the session",
                         }
-                    
+                    if _turn_exit_reason == "guardrail_recovery":
+                        if _tc_names == {"execute_code"}:
+                            self.iteration_budget.refund()
+                        continue
+
+                    if self._guardrails:
+                        self._guardrails.clear_recovery()
+
                     # Use real token counts from the API response to decide
                     # compression.  prompt_tokens + completion_tokens is the
                     # actual context size the provider reported plus the
@@ -11761,6 +11796,8 @@ class AIAgent:
                 
                 else:
                     # No tool calls - this is the final response
+                    if self._guardrails:
+                        self._guardrails.clear_recovery()
                     final_response = assistant_message.content or ""
                     
                     # Fix: unmute output when entering the no-tool-call branch
