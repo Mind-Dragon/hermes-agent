@@ -11,6 +11,7 @@ Usage: python test_guardrails_integration.py
 """
 
 import json
+import sys
 import time
 from typing import Dict, Any, List
 
@@ -356,16 +357,32 @@ if __name__ == "__main__":
     all_pass = True
 
     print("\n--- Scenario 1: Tool Loop Detection ---")
-    all_pass &= test_scenario_1_tool_loop_detection()
+    try:
+        test_scenario_1_tool_loop_detection()
+    except (AssertionError, Exception) as e:
+        print(f"FAILED: {e}")
+        all_pass = False
 
     print("\n--- Scenario 2: Memory Validation ---")
-    all_pass &= test_scenario_2_memory_validation()
+    try:
+        test_scenario_2_memory_validation()
+    except (AssertionError, Exception) as e:
+        print(f"FAILED: {e}")
+        all_pass = False
 
     print("\n--- Scenario 3: Task Preservation ---")
-    all_pass &= test_scenario_3_task_preservation()
+    try:
+        test_scenario_3_task_preservation()
+    except (AssertionError, Exception) as e:
+        print(f"FAILED: {e}")
+        all_pass = False
 
     print("\n--- Scenario 4: GuardrailManager Integration ---")
-    all_pass &= test_scenario_4_guardrail_manager()
+    try:
+        test_scenario_4_guardrail_manager()
+    except (AssertionError, Exception) as e:
+        print(f"FAILED: {e}")
+        all_pass = False
 
     print("\n" + "=" * 60)
     if all_pass:

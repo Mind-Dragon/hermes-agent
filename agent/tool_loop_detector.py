@@ -76,17 +76,17 @@ class ToolLoopDetector:
         """Extract error message from tool result JSON."""
         try:
             data = json.loads(result)
+            # Explicit success: false
             if not data.get("success", True):
                 return data.get("error", "Unknown error")
-            # Treat empty content + total_lines=0 + file_size=0 as failure for read ops
-            # This catches read_file returning empty dicts for nonexistent files
-            if (data.get("content") == "" and data.get("total_lines") == 0 
-                    and data.get("file_size") == 0 and not data.get("truncated", False)):
-                return "File not found or empty"
+            # Many tools (read_file, etc.) return {error: "..."} without a
+            # success flag — treat presence of an error key as failure.
+            if "error" in data and data["error"]:
+                return str(data["error"])
             return None
         except (json.JSONDecodeError, TypeError):
             # Non-JSON result — treat as success unless it contains "error"
-            if "error" in result.lower() and len(result) < 500:
+            if isinstance(result, str) and "error" in result.lower() and len(result) < 500:
                 return result
             return None
 
