@@ -86,7 +86,9 @@ class TaskStatePreserver:
         """Attempt to recover task state from existing messages.
 
         Call this after loading conversation history to see if a prior
-        session preserved task state.
+        session preserved task state. Searches all message roles — the
+        gateway may inject task state as a system note or user message
+        prefix, and context compaction may shift roles.
 
         Returns True if task state was recovered.
         """
@@ -96,8 +98,9 @@ class TaskStatePreserver:
             content = msg.get("content", "")
             if not isinstance(content, str):
                 continue
-            if TASK_STATE_MARKER in content and msg.get("role") == TASK_STATE_ROLE:
-                # Extract original request
+
+            # Look for the formal preservation marker first (from prior AIAgent turns)
+            if TASK_STATE_MARKER in content:
                 lines = content.split("\n")
                 for line in lines:
                     if line.startswith("Original user request: "):
@@ -110,6 +113,35 @@ class TaskStatePreserver:
                 if self._original_request:
                     logger.debug("Task state recovered from messages: hash=%s", self._task_hash)
                     return True
+
+            # Fallback: look for gateway-injected system note format
+            # ("Original user request:" without the formal marker)
+            if "Original user request:" in content:
+                # Extract the request — typically the rest of the line or paragraph
+                start_idx = content.find("Original user request:")
+                after_label = content[start_idx + len("Original user request:"):]
+                # Take up to newline or reasonable boundary
+                end_idx = after_label.find("\n")
+                if end_idx == -1:
+                    end_idx = len(after_label)
+                candidate = after_label[:end_idx].strip()
+                # Also look for task hash nearby
+                hash_match = None
+                if "Task hash:" in content:
+                    hash_start = content.find("Task hash:")
+                    hash_after = content[hash_start + len("Task hash:"):]
+                    hash_end = hash_after.find("\n")
+                    if hash_end == -1:
+                        hash_end = len(hash_after)
+                    hash_match = hash_after[:hash_end].strip()
+
+                if candidate and len(candidate) > 5:  # Sanity check
+                    self._original_request = candidate
+                    self._current_objective = candidate
+                    self._task_hash = hash_match or self._hash_task(candidate, candidate)
+                    logger.debug("Task state recovered from gateway note: hash=%s", self._task_hash)
+                    return True
+
         return False
 
     def get_task_summary(self) -> Optional[str]:

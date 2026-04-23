@@ -228,26 +228,37 @@ def test_scenario_3_task_preservation():
         assert p.build_preservation_message() is None
         assert p.get_task_summary() is None
 
-    # Fail case 3e: Missing marker doesn't extract
-    def fail_3e():
+    # Pass case 3e: Gateway system note without formal marker
+    # (gateway injects "Original user request:" directly in system prompt)
+    def pass_3e():
         p = create_preserver()
-        msg = {"role": "system", "content": "Just a normal system message"}
+        msg = {"role": "system", "content": "Original user request: Build a login form\nTask hash: gateway123"}
         recovered = p.extract_from_messages([msg])
-        assert recovered  # Should be False
+        assert recovered
+        assert p.get_task_summary() == "Build a login form"
 
-    # Fail case 3f: Wrong role doesn't extract
-    def fail_3f():
+    # Pass case 3f: Any role can carry task state (context compaction may shift)
+    def pass_3f():
         p = create_preserver()
         msg = {"role": "user", "content": "[TASK_STATE_PRESERVE]\nOriginal user request: X"}
         recovered = p.extract_from_messages([msg])
-        assert recovered  # Should be False (wrong role)
+        assert recovered
+        assert p.get_task_summary() == "X"
+
+    # Pass case 3g: Normal system message without task info is ignored
+    def pass_3g():
+        p = create_preserver()
+        msg = {"role": "system", "content": "Just a normal system message with no task info"}
+        recovered = p.extract_from_messages([msg])
+        assert not recovered
 
     runner.run("3a: set and build message", pass_3a)
     runner.run("3b: extract from messages", pass_3b)
     runner.run("3c: survives compaction", pass_3c)
     runner.run("3d: no task returns None", pass_3d)
-    runner.run("3e: missing marker no extract", fail_3e, should_pass=False)
-    runner.run("3f: wrong role no extract", fail_3f, should_pass=False)
+    runner.run("3e: gateway system note", pass_3e)
+    runner.run("3f: any role carries task", pass_3f)
+    runner.run("3g: normal system ignored", pass_3g)
 
     assert runner.report()
 
