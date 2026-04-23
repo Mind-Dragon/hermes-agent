@@ -10,12 +10,9 @@ Tests 4 scenarios with pass/fail variants:
 Usage: python test_guardrails_integration.py
 """
 
-import sys
 import json
 import time
 from typing import Dict, Any, List
-
-sys.path.insert(0, '/home/work/hermes-src')
 
 from agent.tool_loop_detector import create_detector, ToolLoopError
 from agent.memory_tool_validator import create_validator, MemoryValidationError
@@ -23,7 +20,9 @@ from agent.task_state_preserver import create_preserver
 from agent.agent_loop_guardrails import GuardrailManager
 
 
-class TestRunner:
+class ScenarioRunner:
+    __test__ = False
+
     def __init__(self):
         self.passed = 0
         self.failed = 0
@@ -54,7 +53,7 @@ class TestRunner:
 
 def test_scenario_1_tool_loop_detection():
     """Scenario 1: Tool loop detection — identical consecutive failures."""
-    runner = TestRunner()
+    runner = ScenarioRunner()
 
     # Pass case 1a: Single failure does not trigger
     def pass_1a():
@@ -113,12 +112,12 @@ def test_scenario_1_tool_loop_detection():
     runner.run("1e: 3 identical failures trigger", fail_1e, should_pass=False)
     runner.run("1f: 5 total failures trigger", fail_1f, should_pass=False)
 
-    return runner.report()
+    assert runner.report()
 
 
 def test_scenario_2_memory_validation():
     """Scenario 2: Memory tool validation — prevents malformed calls."""
-    runner = TestRunner()
+    runner = ScenarioRunner()
 
     # Pass case 2a: Valid replace passes
     def pass_2a():
@@ -177,12 +176,12 @@ def test_scenario_2_memory_validation():
     runner.run("2g: invalid target rejected", pass_2g)
     runner.run("2h: content artifact rejected", pass_2h)
 
-    return runner.report()
+    assert runner.report()
 
 
 def test_scenario_3_task_preservation():
     """Scenario 3: Task state preservation — survives message history."""
-    runner = TestRunner()
+    runner = ScenarioRunner()
 
     # Pass case 3a: Set and build message
     def pass_3a():
@@ -249,12 +248,12 @@ def test_scenario_3_task_preservation():
     runner.run("3e: missing marker no extract", fail_3e, should_pass=False)
     runner.run("3f: wrong role no extract", fail_3f, should_pass=False)
 
-    return runner.report()
+    assert runner.report()
 
 
 def test_scenario_4_guardrail_manager():
     """Scenario 4: Integrated GuardrailManager — full workflow."""
-    runner = TestRunner()
+    runner = ScenarioRunner()
 
     # Pass case 4a: Normal flow no halt
     def pass_4a():
@@ -346,7 +345,7 @@ def test_scenario_4_guardrail_manager():
     runner.run("4g: multiple tools tracked", fail_4g, should_pass=False)
     runner.run("4h: task message exists", pass_4h)
 
-    return runner.report()
+    assert runner.report()
 
 
 if __name__ == "__main__":

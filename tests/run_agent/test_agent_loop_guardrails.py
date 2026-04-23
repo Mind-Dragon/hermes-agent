@@ -63,20 +63,20 @@ class TestToolLoopDetector:
     def test_total_failures_triggers_loop(self):
         detector = create_detector()
         # 5 different failures should trigger total-failure guard
-        for i in range(5):
+        for i in range(4):
             detector.observe(
                 "memory",
                 {"action": "replace", "old_text": f"text{i}"},
                 json.dumps({"success": False, "error": f"fail{i}"}),
             )
-        
+
         with pytest.raises(ToolLoopError) as exc_info:
             detector.observe(
                 "memory",
-                {"action": "replace", "old_text": "text5"},
-                json.dumps({"success": False, "error": "fail5"}),
+                {"action": "replace", "old_text": "text4"},
+                json.dumps({"success": False, "error": "fail4"}),
             )
-        
+
         assert "memory" in str(exc_info.value)
 
 
@@ -208,7 +208,7 @@ class TestGuardrailManager:
         mgr = GuardrailManager()
         mgr.set_task("Test task")
         
-        args = {"action": "replace", "old_text": "foo"}
+        args = {"action": "replace", "old_text": "foo", "content": "bar", "target": "memory"}
         
         # Pre-call should succeed
         mgr.pre_tool_call("memory", args)
@@ -228,7 +228,7 @@ class TestGuardrailManager:
         mgr.set_task("Test task")
         
         # Trigger halt
-        args = {"action": "replace", "old_text": "foo"}
+        args = {"action": "replace", "old_text": "foo", "content": "bar", "target": "memory"}
         for _ in range(3):
             try:
                 mgr.pre_tool_call("memory", args)
