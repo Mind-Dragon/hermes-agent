@@ -79,6 +79,28 @@ class TestToolLoopDetector:
 
         assert "memory" in str(exc_info.value)
 
+    def test_execute_code_compile_failure_is_marked_recoverable(self):
+        detector = create_detector()
+        args = {"code": "from hermes_tools import terminal\nr = terminal(\"python3 << 'PYEOF'\n\")"}
+        result = json.dumps({
+            "status": "error",
+            "error": '  File "/tmp/hermes_sandbox_x/script.py", line 8\n    r = terminal("python3 << \'PYEOF\'\n                 ^\nSyntaxError: unterminated string literal (detected at line 8)\n',
+            "output": '--- stderr ---\nSyntaxError: unterminated string literal (detected at line 8)\n',
+            "tool_calls_made": 0,
+            "duration_seconds": 0.23,
+        })
+        detector.observe("execute_code", args, result)
+        detector.observe("execute_code", args, result)
+
+        with pytest.raises(ToolLoopError) as exc_info:
+            detector.observe("execute_code", args, result)
+
+        err = exc_info.value
+        assert err.recoverable is True
+        assert err.failure_kind == "execute_code_compile_error"
+        assert err.blocked_tools == ["execute_code"]
+        assert "Do not use execute_code for this recovery attempt" in (err.recovery_prompt or "")
+
 
 class TestMemoryToolValidator:
     """Test the memory tool validation logic."""
@@ -218,10 +240,12 @@ class TestGuardrailManager:
         mgr.post_tool_call("memory", args, json.dumps({"success": False, "error": "fail2"}))
         
         mgr.pre_tool_call("memory", args)
-        with pytest.raises(ToolLoopError):
+        with pytest.raises(ToolLoopError) as exc_info:
             mgr.post_tool_call("memory", args, json.dumps({"success": False, "error": "fail3"}))
-        
-        assert mgr.is_halted()
+
+        assert mgr.try_autonomous_recovery(exc_info.value) is True
+        assert not mgr.is_halted()
+        assert mgr.get_stats()["blocked_tools"] == ["memory"]
 
     def test_halted_prevents_further_calls(self):
         mgr = GuardrailManager()
@@ -233,7 +257,10 @@ class TestGuardrailManager:
             try:
                 mgr.pre_tool_call("memory", args)
                 mgr.post_tool_call("memory", args, json.dumps({"success": False, "error": "x"}))
-            except ToolLoopError:
+            except ToolLoopError as loop_err:
+                # Manually mark the guardrail as halted so this test covers the
+                # post-halt fast-path, not the autonomous-recovery path.
+                mgr._halt_reason = str(loop_err)
                 break
         
         assert mgr.is_halted()
@@ -241,6 +268,51 @@ class TestGuardrailManager:
         # Next pre_tool_call should raise immediately
         with pytest.raises(ToolLoopError):
             mgr.pre_tool_call("memory", args)
+
+    def test_autonomous_recovery_blocks_failed_tool_once(self):
+        mgr = GuardrailManager()
+        err = ToolLoopError(
+            tool_name="execute_code",
+            loop_count=3,
+            last_error="SyntaxError: unterminated string literal",
+            suggestion="switch tools",
+            recoverable=True,
+            blocked_tools=["execute_code"],
+            recovery_prompt="[GUARDRAIL_RECOVERY] use terminal instead",
+            failure_kind="execute_code_compile_error",
+        )
+
+        assert mgr.try_autonomous_recovery(err) is True
+        assert not mgr.is_halted()
+        assert mgr.get_stats()["recovery_active"] is True
+        assert mgr.filter_tools_for_api([
+            {"function": {"name": "execute_code"}},
+            {"function": {"name": "terminal"}},
+        ]) == [{"function": {"name": "terminal"}}]
+        assert mgr.build_recovery_message()["content"] == "[GUARDRAIL_RECOVERY] use terminal instead"
+
+        with pytest.raises(RuntimeError):
+            mgr.pre_tool_call("execute_code", {"code": "print(1)"})
+
+        mgr.clear_recovery()
+        assert mgr.get_stats()["recovery_active"] is False
+
+    def test_second_recovery_attempt_becomes_halt(self):
+        mgr = GuardrailManager()
+        err = ToolLoopError(
+            tool_name="terminal",
+            loop_count=5,
+            last_error="permission denied",
+            suggestion="switch tools",
+            recoverable=True,
+            blocked_tools=["terminal"],
+            recovery_prompt="[GUARDRAIL_RECOVERY] use read_file instead",
+        )
+
+        assert mgr.try_autonomous_recovery(err) is True
+        mgr.clear_recovery()
+        assert mgr.try_autonomous_recovery(err) is False
+        assert mgr.is_halted()
 
 
 if __name__ == "__main__":
