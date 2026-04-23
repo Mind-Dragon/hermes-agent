@@ -48,9 +48,12 @@ class MemoryToolValidator:
         self._rejection_count = 0
         self._last_rejection_reason: Optional[str] = None
 
-    def _contains_display_artifact(self, text: str) -> bool:
+    def _contains_display_artifact(self, text) -> bool:
         """Check if text contains display truncation markers."""
         if not text:
+            return False
+        # Guard against non-string types (model may pass list/dict)
+        if not isinstance(text, str):
             return False
         for pattern in self.DISPLAY_ARTIFACT_PATTERNS:
             if re.search(pattern, text):
