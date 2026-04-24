@@ -5405,7 +5405,7 @@ class AIAgent:
         """Accumulate visible assistant text emitted through stream callbacks."""
         if isinstance(text, str) and text:
             self._current_streamed_assistant_text = (
-                getattr(self, "_current_streamed_assistant_text", "") + text
+                (getattr(self, "_current_streamed_assistant_text", None) or "") + text
             )
 
     @staticmethod
@@ -10773,14 +10773,26 @@ class AIAgent:
                     ) and not is_context_length_error
 
                     if is_client_error:
-                        # Try fallback before aborting — a different provider
-                        # may not have the same issue (rate limit, auth, etc.)
-                        self._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
-                        if self._try_activate_fallback():
-                            retry_count = 0
-                            compression_attempts = 0
-                            primary_recovery_attempted = False
-                            continue
+                        # Try fallback before aborting only when a fallback is
+                        # actually pending.  Otherwise avoid misleading logs
+                        # like "trying fallback" followed immediately by abort.
+                        _pending_fallback = (
+                            getattr(self, "_fallback_index", 0)
+                            < len(getattr(self, "_fallback_chain", []) or [])
+                        )
+                        if _pending_fallback:
+                            self._emit_status(
+                                f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback..."
+                            )
+                            if self._try_activate_fallback():
+                                retry_count = 0
+                                compression_attempts = 0
+                                primary_recovery_attempted = False
+                                continue
+                        else:
+                            self._emit_status(
+                                f"⚠️ Non-retryable error (HTTP {status_code}) — no fallback configured."
+                            )
                         if api_kwargs is not None:
                             self._dump_api_request_debug(
                                 api_kwargs, reason="non_retryable_client_error", error=api_error,

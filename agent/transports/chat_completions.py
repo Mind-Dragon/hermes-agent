@@ -28,18 +28,86 @@ class ChatCompletionsTransport(ProviderTransport):
     def api_mode(self) -> str:
         return "chat_completions"
 
+    @staticmethod
+    def _has_internal_message_key(msg: Dict[str, Any]) -> bool:
+        """Return True if a message carries Hermes-only metadata."""
+        return any(isinstance(key, str) and key.startswith("_") for key in msg)
+
+    @staticmethod
+    def _strip_internal_message_keys(msg: Dict[str, Any]) -> None:
+        """Remove Hermes-only metadata before sending to provider APIs."""
+        for key in list(msg):
+            if isinstance(key, str) and key.startswith("_"):
+                msg.pop(key, None)
+
+    @staticmethod
+    def _requires_single_system_message(model: str) -> bool:
+        """MiniMax M2.7 highspeed rejects multiple system messages (400/2013)."""
+        model_lower = (model or "").lower()
+        return "m2.7-highspeed" in model_lower
+
+    @staticmethod
+    def _content_to_system_text(content: Any) -> str:
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: List[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict) and item.get("type") == "text":
+                    text = item.get("text")
+                    if text is not None:
+                        parts.append(str(text))
+                elif item is not None:
+                    parts.append(str(item))
+            return "\n".join(part for part in parts if part)
+        return str(content)
+
+    def _coalesce_system_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        system_messages = [
+            msg for msg in messages
+            if isinstance(msg, dict) and msg.get("role") == "system"
+        ]
+        if len(system_messages) <= 1:
+            return messages
+
+        merged_content = "\n\n".join(
+            text for text in (
+                self._content_to_system_text(msg.get("content"))
+                for msg in system_messages
+            )
+            if text
+        )
+        merged_system = copy.deepcopy(system_messages[0])
+        merged_system["content"] = merged_content
+
+        coalesced: List[Dict[str, Any]] = []
+        inserted_system = False
+        for msg in messages:
+            if isinstance(msg, dict) and msg.get("role") == "system":
+                if not inserted_system:
+                    coalesced.append(merged_system)
+                    inserted_system = True
+                continue
+            coalesced.append(copy.deepcopy(msg) if isinstance(msg, dict) else msg)
+        return coalesced
+
     def convert_messages(self, messages: List[Dict[str, Any]], **kwargs) -> List[Dict[str, Any]]:
-        """Messages are already in OpenAI format — sanitize Codex leaks only.
+        """Messages are already in OpenAI format with provider-leak cleanup.
 
         Strips Codex Responses API fields (``codex_reasoning_items`` on the
-        message, ``call_id``/``response_item_id`` on tool_calls) that strict
+        message, ``call_id``/``response_item_id`` on tool_calls) and Hermes-only
+        underscore-prefixed metadata (for example ``_task_state``) that strict
         chat-completions providers reject with 400/422.
         """
         needs_sanitize = False
         for msg in messages:
             if not isinstance(msg, dict):
                 continue
-            if "codex_reasoning_items" in msg:
+            if "codex_reasoning_items" in msg or self._has_internal_message_key(msg):
                 needs_sanitize = True
                 break
             tool_calls = msg.get("tool_calls")
@@ -58,6 +126,7 @@ class ChatCompletionsTransport(ProviderTransport):
         for msg in sanitized:
             if not isinstance(msg, dict):
                 continue
+            self._strip_internal_message_keys(msg)
             msg.pop("codex_reasoning_items", None)
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
@@ -118,8 +187,11 @@ class ChatCompletionsTransport(ProviderTransport):
             # Extra
             extra_body_additions: dict | None — pre-built extra_body entries
         """
-        # Codex sanitization: drop reasoning_items / call_id / response_item_id
+        # Codex/internal metadata sanitization: drop reasoning_items,
+        # call_id / response_item_id, and Hermes-only underscore keys.
         sanitized = self.convert_messages(messages)
+        if self._requires_single_system_message(model):
+            sanitized = self._coalesce_system_messages(sanitized)
 
         # Qwen portal prep AFTER codex sanitization.  If sanitize already
         # deepcopied, reuse that copy via the in-place variant to avoid a

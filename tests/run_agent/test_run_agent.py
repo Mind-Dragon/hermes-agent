@@ -1603,6 +1603,35 @@ class TestExecuteToolCalls:
         assert "API call failed" not in output
         assert "Rate limit reached" not in output
 
+    def test_non_retryable_client_error_without_fallback_does_not_claim_fallback(self, agent):
+        class _BadRequestError(Exception):
+            status_code = 400
+
+            def __str__(self):
+                return "HTTP 400: invalid params, invalid chat setting (2013)"
+
+        def _fake_api_call(api_kwargs):
+            raise _BadRequestError()
+
+        status_messages = []
+        agent._fallback_chain = []
+        agent._fallback_index = 0
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_emit_status", side_effect=status_messages.append),
+            patch.object(agent, "_try_activate_fallback", return_value=False) as mock_fallback,
+            patch.object(agent, "_dump_api_request_debug"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["failed"] is True
+        mock_fallback.assert_not_called()
+        assert not any("trying fallback" in msg.lower() for msg in status_messages)
+
 
 class TestConcurrentToolExecution:
     """Tests for _execute_tool_calls_concurrent and dispatch logic."""
