@@ -6,13 +6,13 @@ into the existing agent loop without heavy refactoring.
 
 Usage in run_agent.py:
     from agent.agent_loop_guardrails import GuardrailManager
-    
+
     # In AIAgent.__init__:
     self._guardrails = GuardrailManager()
-    
+
     # In run_conversation(), after building user message:
     self._guardrails.set_task(user_message)
-    
+
     # In the tool execution path, before/after handle_function_call:
     self._guardrails.pre_tool_call(tool_name, args)
     result = handle_function_call(...)

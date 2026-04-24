@@ -11673,11 +11673,11 @@ class AIAgent:
                                     "content": json.dumps({"error": str(guard_err), "success": False}),
                                 })
                                 _blocked_tc_ids.add(tc.id)
-                    
+
                     # Execute only the allowed tool calls
                     if len(_blocked_tc_ids) < len(assistant_message.tool_calls):
                         self._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
-                    
+
                     # Observe results for loop detection
                     if self._guardrails:
                         for tc in assistant_message.tool_calls:
