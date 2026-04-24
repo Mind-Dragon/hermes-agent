@@ -5608,7 +5608,7 @@ class AIAgent:
         """Accumulate visible assistant text emitted through stream callbacks."""
         if isinstance(text, str) and text:
             self._current_streamed_assistant_text = (
-                getattr(self, "_current_streamed_assistant_text", "") + text
+                (getattr(self, "_current_streamed_assistant_text", None) or "") + text
             )
 
     @staticmethod

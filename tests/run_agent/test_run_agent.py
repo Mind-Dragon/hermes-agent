@@ -4074,6 +4074,13 @@ class TestStreamingApiCall:
         callback.assert_any_call("lo ")
         callback.assert_any_call("World")
 
+    def test_record_streamed_text_recovers_from_none_accumulator(self, agent):
+        agent._current_streamed_assistant_text = None
+
+        agent._record_streamed_assistant_text("delta")
+
+        assert agent._current_streamed_assistant_text == "delta"
+
     def test_tool_call_accumulation(self, agent):
         # Per OpenAI streaming spec, function names are delivered atomically
         # in the first chunk; only `arguments` is fragmented across chunks.
