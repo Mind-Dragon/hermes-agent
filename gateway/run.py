@@ -5985,11 +5985,8 @@ class GatewayRunner:
             channel = getattr(raw, "channel", None)
             parent = getattr(channel, "parent", None)
             parent_id = getattr(parent, "id", None) or getattr(channel, "parent_id", None)
-            parent_type = getattr(parent, "type", None)
-            parent_type_value = getattr(parent_type, "value", parent_type)
-            parent_class_name = getattr(parent.__class__, "__name__", "")
-            is_forum_parent = parent_type_value in (15, 16) or parent_class_name in {"ForumChannel", "MediaChannel"}
-            if parent is not None and parent_id is not None and not is_forum_parent:
+            is_post_parent = self._discord_parent_is_forum_or_media(parent)
+            if parent is not None and parent_id is not None and not is_post_parent:
                 chat_id = str(parent_id)
                 parent_name = getattr(parent, "name", None)
                 guild = getattr(parent, "guild", None) or getattr(channel, "guild", None)
@@ -6027,6 +6024,37 @@ class GatewayRunner:
             response += f"\n{reroute_note}"
         return response
     
+    @staticmethod
+    def _discord_parent_is_forum_or_media(parent: Any) -> bool:
+        """Return True for Discord forum/media parent channels.
+
+        Prefer discord.py's ChannelType enum when available. The lightweight
+        name/class fallbacks keep tests and older adapter objects working
+        without hard-coding Discord's numeric channel type values.
+        """
+        if parent is None:
+            return False
+        parent_type = getattr(parent, "type", None)
+        try:
+            import discord  # type: ignore
+
+            channel_type = getattr(discord, "ChannelType", None)
+            for expected in (
+                getattr(channel_type, "forum", None),
+                getattr(channel_type, "media", None),
+            ):
+                if expected is not None and parent_type == expected:
+                    return True
+        except Exception:
+            pass
+
+        parent_type_name = getattr(parent_type, "name", None)
+        if parent_type_name in {"forum", "media"}:
+            return True
+
+        parent_class_name = getattr(parent.__class__, "__name__", "")
+        return parent_class_name in {"ForumChannel", "MediaChannel"}
+
     @staticmethod
     def _get_guild_id(event: MessageEvent) -> Optional[int]:
         """Extract Discord guild_id from the raw message object."""

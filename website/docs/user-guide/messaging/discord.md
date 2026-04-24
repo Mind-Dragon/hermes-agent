@@ -489,9 +489,9 @@ For a single operator using Hermes heavily in Discord, the smoothest pattern is:
 1. **Pick one durable parent channel** (for example `#agent-ops`) as the home base for deliveries.
 2. **Run `/sethome` there once**. If you happen to run `/sethome` from a normal thread under that channel, Hermes stores the parent channel ID so cron jobs and cross-platform deliveries still land in the stable parent channel. Forum/media post threads keep their own thread ID.
 3. **Use one thread per substantial task**. Start a new thread for each feature, bug, or research lane so transcript history stays isolated and easy to revisit.
-4. **Lead with the work item ID** when you want continuity, e.g. `pick up hermes-mge; continue ...`. This gives Hermes a strong retrieval handle for Beads issues and past session search.
-5. **Name the session with `/title`** if you expect to resume it from another surface later. A good default is the Beads ID plus a short slug, such as `/title hermes-mge discord workflow`.
-6. **Resume in place when possible**. If the original thread is still the right lane, keep talking there. If you need to move surfaces or recover after a reset, use `/resume <name>` or explicitly say `pick up <bead-id>`.
+4. **Lead with the work item ID** when you want continuity, e.g. `pick up hermes-mge; continue ...`. This gives Hermes a strong retrieval handle for past session search.
+5. **Name the session with `/title`** if you expect to resume it from another surface later. A good default is the work item ID plus a short slug, such as `/title hermes-mge discord workflow`.
+6. **Resume in place when possible**. If the original thread is still the right lane, keep talking there. If you need to move surfaces or recover after a reset, use `/resume <name>` or explicitly say `pick up <work-item-id>`.
 
 This gives you a stable inbox for proactive deliveries plus disposable task threads for execution.
 

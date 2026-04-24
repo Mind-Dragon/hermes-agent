@@ -17,8 +17,8 @@ class MediaChannel:
 
 
 class FakeType:
-    def __init__(self, value):
-        self.value = value
+    def __init__(self, name):
+        self.name = name
 
 
 @pytest.mark.asyncio
@@ -73,7 +73,7 @@ async def test_sethome_keeps_forum_thread_as_home_target(monkeypatch, tmp_path):
     parent.id = 222
     parent.name = "ideas"
     parent.guild = guild
-    parent.type = FakeType(15)
+    parent.type = FakeType("forum")
     channel = SimpleNamespace(parent=parent, parent_id=parent.id, guild=guild)
     raw_message = SimpleNamespace(channel=channel)
 
@@ -114,7 +114,7 @@ async def test_sethome_keeps_media_thread_as_home_target(monkeypatch, tmp_path):
     parent.id = 444
     parent.name = "media"
     parent.guild = guild
-    parent.type = FakeType(16)
+    parent.type = FakeType("media")
     channel = SimpleNamespace(parent=parent, parent_id=parent.id, guild=guild)
     raw_message = SimpleNamespace(channel=channel)
 

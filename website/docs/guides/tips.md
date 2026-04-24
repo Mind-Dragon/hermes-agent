@@ -163,7 +163,7 @@ For Discord, the best personal pattern is a durable parent channel (for example 
 
 Name your sessions with `/title auth-refactor` or `/title research-llm-quantization`. Named sessions are easy to find with `hermes sessions list` and resume with `hermes -r "auth-refactor"`. Unnamed sessions pile up and become impossible to distinguish.
 
-For Beads-driven work in Discord, include the issue ID in the title or opening message (`hermes-mge discord workflow`). That makes later pickup prompts like `pick up hermes-mge` much more reliable across threads and sessions.
+For issue-driven work in Discord, include the issue or ticket ID in the title or opening message (`hermes-mge discord workflow`). That makes later pickup prompts like `pick up hermes-mge` much more reliable across threads and sessions.
 
 ### DM Pairing for Team Access
 
