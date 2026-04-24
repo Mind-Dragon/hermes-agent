@@ -115,6 +115,43 @@ def test_cass_search_uses_separator_for_hyphen_leading_query():
     assert runner.calls[0][0][-2:] == ["--", "-h"]
 
 
+def test_cass_search_rejects_invalid_integer_filters_before_subprocess():
+    from tools.cass_tool import cass_search
+
+    with patch("tools.cass_tool.subprocess.run") as run:
+        bad_offset = json.loads(cass_search("query", offset="not-a-number"))
+        bad_days = json.loads(cass_search("query", days="not-a-number"))
+
+    run.assert_not_called()
+    assert bad_offset["success"] is False
+    assert "offset" in bad_offset["error"]
+    assert bad_days["success"] is False
+    assert "days" in bad_days["error"]
+
+
+def test_cass_search_supports_repeated_workspace_and_agent_filters():
+    from tools.cass_tool import cass_search
+
+    runner = _RunRecorder(stdout=json.dumps({"hits": []}))
+    with (
+        patch("tools.cass_tool.shutil.which", return_value="/usr/local/bin/cass"),
+        patch("tools.cass_tool.subprocess.run", runner),
+    ):
+        json.loads(
+            cass_search(
+                "query",
+                workspace=["/repo/a", "/repo/b"],
+                agent=["claude_code", "codex"],
+            )
+        )
+
+    cmd = runner.calls[0][0]
+    assert cmd.count("--workspace") == 2
+    assert cmd.count("--agent") == 2
+    assert "/repo/a" in cmd and "/repo/b" in cmd
+    assert "claude_code" in cmd and "codex" in cmd
+
+
 def test_missing_cass_returns_clear_error():
     from tools.cass_tool import cass_status
 
@@ -175,3 +212,32 @@ def test_cass_context_and_analytics_parse_json_results():
         "--workspace",
         "/repo",
     ]
+
+
+def test_cass_analytics_rejects_invalid_days_before_subprocess():
+    from tools.cass_tool import cass_analytics
+
+    with patch("tools.cass_tool.subprocess.run") as run:
+        result = json.loads(cass_analytics(kind="tokens", days="not-a-number"))
+
+    run.assert_not_called()
+    assert result["success"] is False
+    assert "days" in result["error"]
+
+
+def test_cass_schemas_allow_repeated_filter_arrays():
+    from tools import cass_tool
+
+    search_props = cass_tool._CASS_SEARCH_SCHEMA["parameters"]["properties"]
+    timeline_props = cass_tool._CASS_TIMELINE_SCHEMA["parameters"]["properties"]
+    analytics_props = cass_tool._CASS_ANALYTICS_SCHEMA["parameters"]["properties"]
+
+    for schema in (
+        search_props["workspace"],
+        search_props["agent"],
+        timeline_props["agent"],
+        analytics_props["workspace"],
+        analytics_props["agent"],
+    ):
+        assert schema["type"] == "array"
+        assert schema["items"] == {"type": "string"}

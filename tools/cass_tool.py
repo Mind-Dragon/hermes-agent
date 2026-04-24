@@ -138,6 +138,17 @@ def _bounded_int(value: int | str | None, *, default: int, minimum: int, maximum
     return min(max(number, minimum), maximum)
 
 
+def _nonnegative_int_arg(value: Any, *, name: str, command: str) -> tuple[int | None, str | None]:
+    try:
+        return max(0, int(value)), None
+    except (TypeError, ValueError):
+        return None, tool_error(f"{name} must be an integer", success=False, command=command)
+
+
+def _string_array_filter_schema(description: str) -> dict[str, Any]:
+    return {"type": "array", "items": {"type": "string"}, "description": description}
+
+
 def cass_status() -> str:
     """Return CASS index health and database status."""
     return _run_cass(["status", "--json"], command="status", timeout=30)
@@ -187,8 +198,11 @@ def cass_search(
         "--mode",
         mode,
     ]
-    if offset:
-        args.extend(["--offset", str(max(0, int(offset)))])
+    if offset not in (None, "", 0):
+        offset_value, error = _nonnegative_int_arg(offset, name="offset", command="search")
+        if error:
+            return error
+        args.extend(["--offset", str(offset_value)])
     _append_repeated(args, "--workspace", workspace)
     _append_repeated(args, "--agent", agent)
     if since:
@@ -196,7 +210,10 @@ def cass_search(
     if until:
         args.extend(["--until", until])
     if days is not None:
-        args.extend(["--days", str(max(0, int(days)))])
+        days_value, error = _nonnegative_int_arg(days, name="days", command="search")
+        if error:
+            return error
+        args.extend(["--days", str(days_value)])
     if fields:
         args.extend(["--fields", fields])
     if max_content_length is not None:
@@ -286,7 +303,10 @@ def cass_analytics(
     args = ["analytics", kind, "--json"]
     if kind != "status":
         if days is not None:
-            args.extend(["--days", str(max(0, int(days)))])
+            days_value, error = _nonnegative_int_arg(days, name="days", command="analytics")
+            if error:
+                return error
+            args.extend(["--days", str(days_value)])
         if since:
             args.extend(["--since", since])
         if until:
@@ -324,8 +344,8 @@ _CASS_SEARCH_SCHEMA = {
             "query": {"type": "string", "description": "Search query."},
             "limit": {"type": "integer", "description": "Maximum number of hits to return (bounded 1-25).", "default": 5, "minimum": 1, "maximum": 25},
             "mode": {"type": "string", "enum": sorted(_ALLOWED_SEARCH_MODES), "default": "lexical"},
-            "workspace": {"type": "string", "description": "Workspace path filter."},
-            "agent": {"type": "string", "description": "Agent slug filter, e.g. claude_code."},
+            "workspace": _string_array_filter_schema("Workspace path filters."),
+            "agent": _string_array_filter_schema("Agent slug filters, e.g. claude_code."),
             "since": {"type": "string", "description": "Start date/time filter."},
             "until": {"type": "string", "description": "End date/time filter."},
             "days": {"type": "integer", "description": "Filter to last N days."},
@@ -360,7 +380,7 @@ _CASS_TIMELINE_SCHEMA = {
             "since": {"type": "string"},
             "until": {"type": "string"},
             "today": {"type": "boolean", "default": False},
-            "agent": {"type": "string"},
+            "agent": _string_array_filter_schema("Agent slug filters."),
             "group_by": {"type": "string", "enum": ["hour", "day", "none"], "default": "day"},
             "source": {"type": "string"},
         },
@@ -391,8 +411,8 @@ _CASS_ANALYTICS_SCHEMA = {
         "properties": {
             "kind": {"type": "string", "enum": sorted(_ALLOWED_ANALYTICS_KINDS), "default": "tokens"},
             "days": {"type": "integer", "default": 7},
-            "workspace": {"type": "string"},
-            "agent": {"type": "string"},
+            "workspace": _string_array_filter_schema("Workspace path filters."),
+            "agent": _string_array_filter_schema("Agent slug filters."),
             "source": {"type": "string"},
             "group_by": {"type": "string", "enum": ["hour", "day", "week", "month"]},
             "since": {"type": "string"},
