@@ -80,6 +80,13 @@ def detect_tool_failure(tool_name: str, result: Optional[str]) -> bool:
         data = None
 
     if isinstance(data, dict):
+        # Memory-specific: "full" detection (existing display semantics).
+        # Check before generic success:false so this branch stays reachable if
+        # callers later add richer classification around memory capacity errors.
+        if tool_name == "memory":
+            error = data.get("error", "")
+            if data.get("success") is False and isinstance(error, str) and "exceed the limit" in error:
+                return True
         # JSON success: false
         if data.get("success") is False:
             return True
@@ -94,10 +101,6 @@ def detect_tool_failure(tool_name: str, result: Optional[str]) -> bool:
         if tool_name == "terminal":
             exit_code = data.get("exit_code")
             if exit_code is not None and exit_code != 0:
-                return True
-        # Memory-specific: "full" detection (existing display semantics)
-        if tool_name == "memory":
-            if data.get("success") is False and "exceed the limit" in data.get("error", ""):
                 return True
         # If we parsed JSON and none of the above failure conditions matched,
         # treat as success (even if error field is empty).

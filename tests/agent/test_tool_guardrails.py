@@ -190,7 +190,7 @@ class TestRepeatedFailureTracker:
         # Return to hash123 (old hash) should start at 1, not cumulative
         tracker.record_failure("foo", "hash123")
         assert tracker.failure_count("foo", "hash123") == 1
-        # Ensure hash456 streak is still current (should be 1)
+        # hash456 is no longer current after returning to hash123.
         assert tracker.failure_count("foo", "hash456") == 0  # not current key
 
     def test_block_decision(self):
