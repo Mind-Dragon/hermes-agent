@@ -263,6 +263,27 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
 
+    def test_child_inherits_parent_fallback_chain(self):
+        parent = _make_mock_parent(depth=0)
+        parent._fallback_chain = [
+            {"provider": "kimi-coding", "model": "kimi-k2.6"},
+            {"provider": "minimax", "model": "MiniMax-M2.7"},
+        ]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "ok",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Test fallback inheritance", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["fallback_model"], parent._fallback_chain)
+
     def test_child_inherits_parent_print_fn(self):
         parent = _make_mock_parent(depth=0)
         sink = MagicMock()

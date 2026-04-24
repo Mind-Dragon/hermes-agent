@@ -927,6 +927,18 @@ def _build_child_agent(
         if override_acp_args is not None
         else (getattr(parent_agent, "acp_args", []) or [])
     )
+    parent_fallback_chain = getattr(parent_agent, "_fallback_chain", None)
+    if isinstance(parent_fallback_chain, list) and parent_fallback_chain:
+        effective_fallback_model = list(parent_fallback_chain)
+    else:
+        parent_fallback_model = getattr(parent_agent, "_fallback_model", None)
+        effective_fallback_model = (
+            dict(parent_fallback_model)
+            if isinstance(parent_fallback_model, dict)
+            and parent_fallback_model.get("provider")
+            and parent_fallback_model.get("model")
+            else None
+        )
 
     if override_acp_command:
         # If explicitly forcing an ACP transport override, the provider MUST be copilot-acp
@@ -964,6 +976,7 @@ def _build_child_agent(
         max_iterations=max_iterations,
         max_tokens=getattr(parent_agent, "max_tokens", None),
         reasoning_config=child_reasoning,
+        fallback_model=effective_fallback_model,
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
         enabled_toolsets=child_toolsets,
         quiet_mode=True,
