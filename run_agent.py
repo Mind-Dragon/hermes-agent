@@ -81,6 +81,7 @@ from tools.browser_tool import cleanup_browser
 
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import build_memory_context_block, sanitize_context
+from agent.agent_loop_guardrails import GuardrailManager, ToolLoopError
 from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
@@ -1213,10 +1214,14 @@ class AIAgent:
         self._stream_needs_break = False
         # Visible assistant text already delivered through live token callbacks
         # during the current model response. Used to avoid re-sending the same
-        # commentary when the provider later returns it as a completed interim
-        # assistant message.
-        self._current_streamed_assistant_text = ""
-
+        # text when the model's final response arrives.
+        self._current_streamed_assistant_text = None
+        self._response_was_previewed = False
+        self._mute_post_response = False
+        # Loop-prevention guardrails (initialized after config load)
+        self._guardrails = None
+        self._guardrails_enabled = True
+        self._task_preserve_msg = None  # Ephemeral task preservation message
         # Optional current-turn user-message override used when the API-facing
         # user message intentionally differs from the persisted transcript
         # (e.g. CLI voice mode adds a temporary prefix for the live call only).
@@ -1590,6 +1595,15 @@ class AIAgent:
         # needed later by the startup feasibility check.  Avoid exposing a
         # broad pseudo-public config object on the agent instance.
         self._aux_compression_context_length_config = None
+
+        # Loop-prevention guardrails (configurable via agent.guardrails.enabled)
+        try:
+            _guardrails_cfg = _agent_cfg.get("guardrails", {})
+            self._guardrails_enabled = _guardrails_cfg.get("enabled", True)
+            if self._guardrails_enabled:
+                self._guardrails = GuardrailManager()
+        except Exception:
+            pass  # Never let guardrail init break agent startup
 
         # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
         self._memory_store = None
@@ -9335,6 +9349,22 @@ class AIAgent:
         # be saved to session DB, session logs, or batch trajectories, but they're
         # automatically re-applied on every API call (including session continuations).
         
+        # Preserve task state so context compaction can't lose it.
+        # The preservation message is kept ephemeral (injected at API call
+        # time only) to avoid mutating the messages list, which would break
+        # the session DB flush logic (start_idx = len(conversation_history)).
+        if self._guardrails:
+            if conversation_history and not self._guardrails.get_task_summary():
+                # Try to recover task from existing messages first (session resume)
+                self._guardrails.recover_task(conversation_history)
+            # Also check the system message / system prompt for task state
+            # (gateway platforms inject "Original user request:" there)
+            if not self._guardrails.get_task_summary() and system_message:
+                self._guardrails.recover_task([{"role": "system", "content": system_message}])
+            if not self._guardrails.get_task_summary():
+                self._guardrails.set_task(user_message)
+            self._task_preserve_msg = self._guardrails.get_task_message()
+
         # Track user turns for memory flush and periodic nudge logic
         self._user_turn_count += 1
 
@@ -9570,6 +9600,20 @@ class AIAgent:
                 pass
 
         while (api_call_count < self.max_iterations and self.iteration_budget.remaining > 0) or self._budget_grace_call:
+            # Guardrail: check if we've halted due to a detected loop
+            if self._guardrails and self._guardrails.is_halted():
+                _turn_exit_reason = "guardrail_halt"
+                self._vprint(f"{self.log_prefix}🛑 Guardrail halt: {self._guardrails.get_stats().get('halt_reason', 'Unknown')}", force=True)
+                self._persist_session(messages, conversation_history)
+                return {
+                    "final_response": None,
+                    "messages": messages,
+                    "api_calls": api_call_count,
+                    "completed": False,
+                    "partial": True,
+                    "error": self._guardrails.get_stats().get("halt_reason", "Guardrail halted the session"),
+                }
+
             # Reset per-turn checkpoint dedup so each iteration can take one snapshot
             self._checkpoint_mgr.new_turn()
 
@@ -9756,6 +9800,13 @@ class AIAgent:
             # cache prefix.  The system prompt is reserved for Hermes internals.
             if effective_system:
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
+
+            # Inject task preservation message (ephemeral, API-call-time only).
+            # Placed right after system prompt so context compression treats it
+            # as protected system content — survives compaction.
+            if getattr(self, "_task_preserve_msg", None):
+                sys_offset = 1 if effective_system else 0
+                api_messages.insert(sys_offset, self._task_preserve_msg.copy())
 
             # Inject ephemeral prefill messages right after the system prompt
             # but before conversation history. Same API-call-time-only pattern.
@@ -12008,7 +12059,48 @@ class AIAgent:
                         except Exception:
                             pass
 
-                    self._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+                    # Guardrail: validate each tool call before execution.
+                    # Block only invalid calls; execute the rest normally.
+                    _blocked_tc_ids = set()
+                    if self._guardrails:
+                        for tc in assistant_message.tool_calls:
+                            try:
+                                self._guardrails.pre_tool_call(tc.function.name, json.loads(tc.function.arguments or "{}"))
+                            except Exception as guard_err:
+                                # Inject guardrail error as tool result for this call only
+                                messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": tc.id,
+                                    "content": json.dumps({"error": str(guard_err), "success": False}),
+                                })
+                                _blocked_tc_ids.add(tc.id)
+                    
+                    # Execute only the allowed tool calls
+                    if len(_blocked_tc_ids) < len(assistant_message.tool_calls):
+                        self._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+                    
+                    # Observe results for loop detection
+                    if self._guardrails:
+                        for tc in assistant_message.tool_calls:
+                            # Find the matching tool result
+                            for msg in messages:
+                                if msg.get("role") == "tool" and msg.get("tool_call_id") == tc.id:
+                                    try:
+                                        self._guardrails.post_tool_call(
+                                            tc.function.name,
+                                            json.loads(tc.function.arguments or "{}"),
+                                            msg.get("content", "{}"),
+                                        )
+                                    except ToolLoopError as loop_err:
+                                        # Loop detected — halt the conversation
+                                        self._vprint(f"{self.log_prefix}🛑 Guardrail halt: {loop_err}", force=True)
+                                        _turn_exit_reason = "guardrail_halt"
+                                        break
+                                    except Exception:
+                                        pass
+                                    break
+                            if _turn_exit_reason == "guardrail_halt":
+                                break
 
                     # Reset per-turn retry counters after successful tool
                     # execution so a single truncation doesn't poison the
@@ -12029,6 +12121,18 @@ class AIAgent:
                     _tc_names = {tc.function.name for tc in assistant_message.tool_calls}
                     if _tc_names == {"execute_code"}:
                         self.iteration_budget.refund()
+                    
+                    # Check if guardrails triggered a halt during tool observation
+                    if _turn_exit_reason == "guardrail_halt":
+                        self._persist_session(messages, conversation_history)
+                        return {
+                            "final_response": None,
+                            "messages": messages,
+                            "api_calls": api_call_count,
+                            "completed": False,
+                            "partial": True,
+                            "error": self._guardrails.get_stats().get("halt_reason", "Guardrail halted the session") if self._guardrails else "Guardrail halted the session",
+                        }
                     
                     # Use real token counts from the API response to decide
                     # compression.  prompt_tokens + completion_tokens is the
