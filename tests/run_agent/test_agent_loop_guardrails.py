@@ -30,13 +30,13 @@ class TestToolLoopDetector:
     def test_three_identical_failures_triggers_loop(self):
         detector = create_detector()
         args = {"action": "replace", "old_text": "foo", "content": "bar"}
-        
+
         detector.observe("memory", args, json.dumps({"success": False, "error": "first"}))
         detector.observe("memory", args, json.dumps({"success": False, "error": "second"}))
-        
+
         with pytest.raises(ToolLoopError) as exc_info:
             detector.observe("memory", args, json.dumps({"success": False, "error": "third"}))
-        
+
         assert "memory" in str(exc_info.value)
         assert "3" in str(exc_info.value) or "failed" in str(exc_info.value).lower()
 
@@ -52,11 +52,11 @@ class TestToolLoopDetector:
     def test_success_resets_counter(self):
         detector = create_detector()
         args = {"action": "replace", "old_text": "foo"}
-        
+
         detector.observe("memory", args, json.dumps({"success": False, "error": "oops"}))
         detector.observe("memory", args, json.dumps({"success": True}))
         detector.observe("memory", args, json.dumps({"success": False, "error": "oops2"}))
-        
+
         # Only 1 consecutive failure after success reset
         assert detector.get_stats()["consecutive_failures"]["memory"] == 1
 
@@ -146,7 +146,7 @@ class TestTaskStatePreserver:
     def test_set_and_build_message(self):
         preserver = create_preserver()
         preserver.set_task("Please refactor the auth module", "Refactor auth.py")
-        
+
         msg = preserver.build_preservation_message()
         assert msg is not None
         assert msg["role"] == "system"
@@ -166,7 +166,7 @@ class TestTaskStatePreserver:
                 "This message must be preserved..."
             ),
         }
-        
+
         recovered = preserver.extract_from_messages([msg])
         assert recovered is True
         assert preserver.get_task_summary() == "Create HTML login form"
@@ -183,17 +183,17 @@ class TestGuardrailManager:
     def test_full_flow_no_issues(self):
         mgr = GuardrailManager()
         mgr.set_task("Do something simple")
-        
+
         # Simulate a successful tool call
         mgr.pre_tool_call("read_file", {"path": "/tmp/test"})
         mgr.post_tool_call("read_file", {"path": "/tmp/test"}, json.dumps({"success": True}))
-        
+
         assert not mgr.is_halted()
 
     def test_memory_guardrail_blocks_invalid(self):
         mgr = GuardrailManager()
         mgr.set_task("Test task")
-        
+
         with pytest.raises(MemoryValidationError) as exc_info:
             mgr.pre_tool_call("memory", {
                 "action": "replace",
@@ -201,32 +201,32 @@ class TestGuardrailManager:
                 "content": "new",
                 "target": "memory",
             })
-        
+
         assert "display artifact" in str(exc_info.value)
 
     def test_loop_detection_halts(self):
         mgr = GuardrailManager()
         mgr.set_task("Test task")
-        
+
         args = {"action": "replace", "old_text": "foo", "content": "bar", "target": "memory"}
-        
+
         # Pre-call should succeed
         mgr.pre_tool_call("memory", args)
         mgr.post_tool_call("memory", args, json.dumps({"success": False, "error": "fail1"}))
-        
+
         mgr.pre_tool_call("memory", args)
         mgr.post_tool_call("memory", args, json.dumps({"success": False, "error": "fail2"}))
-        
+
         mgr.pre_tool_call("memory", args)
         with pytest.raises(ToolLoopError):
             mgr.post_tool_call("memory", args, json.dumps({"success": False, "error": "fail3"}))
-        
+
         assert mgr.is_halted()
 
     def test_halted_prevents_further_calls(self):
         mgr = GuardrailManager()
         mgr.set_task("Test task")
-        
+
         # Trigger halt
         args = {"action": "replace", "old_text": "foo", "content": "bar", "target": "memory"}
         for _ in range(3):
@@ -235,9 +235,9 @@ class TestGuardrailManager:
                 mgr.post_tool_call("memory", args, json.dumps({"success": False, "error": "x"}))
             except ToolLoopError:
                 break
-        
+
         assert mgr.is_halted()
-        
+
         # Next pre_tool_call should raise immediately
         with pytest.raises(ToolLoopError):
             mgr.pre_tool_call("memory", args)
