@@ -5,12 +5,10 @@ import tools.terminal_tool as terminal_tool
 
 def setup_function():
     terminal_tool._cached_sudo_password = ""
-    terminal_tool._sudo_nopasswd_available = None
 
 
 def teardown_function():
     terminal_tool._cached_sudo_password = ""
-    terminal_tool._sudo_nopasswd_available = None
 
 
 def test_searching_for_sudo_does_not_trigger_rewrite(monkeypatch):
@@ -109,23 +107,25 @@ def test_passwordless_sudo_skips_interactive_prompt_and_rewrite(monkeypatch):
     assert sudo_stdin is None
 
 
-def test_passwordless_sudo_probe_is_cached_for_local_terminal(monkeypatch):
+def test_passwordless_sudo_probe_rechecks_local_terminal(monkeypatch):
     monkeypatch.delenv("TERMINAL_ENV", raising=False)
     calls = []
 
     class Result:
-        returncode = 0
+        def __init__(self, returncode):
+            self.returncode = returncode
 
     def fake_run(args, **kwargs):
         calls.append((args, kwargs))
-        return Result()
+        return Result(0 if len(calls) == 1 else 1)
 
     monkeypatch.setattr(terminal_tool.subprocess, "run", fake_run)
 
     assert terminal_tool._sudo_nopasswd_works() is True
-    assert terminal_tool._sudo_nopasswd_works() is True
-    assert len(calls) == 1
+    assert terminal_tool._sudo_nopasswd_works() is False
+    assert len(calls) == 2
     assert calls[0][0] == ["sudo", "-n", "true"]
+    assert calls[1][0] == ["sudo", "-n", "true"]
 
 
 def test_passwordless_sudo_probe_is_disabled_for_nonlocal_terminal_env(monkeypatch):

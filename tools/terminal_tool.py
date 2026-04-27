@@ -147,8 +147,6 @@ def _check_disk_usage_warning():
 
 # Session-cached sudo password (persists until CLI exits)
 _cached_sudo_password: str = ""
-# Cache whether this host/user can run sudo without a password. None = unknown.
-_sudo_nopasswd_available: bool | None = None
 
 # Optional UI callbacks for interactive prompts. When set, these are called
 # instead of the default /dev/tty or input() readers. The CLI registers these
@@ -504,15 +502,10 @@ def _rewrite_real_sudo_invocations(command: str) -> tuple[str, bool]:
 
 
 def _sudo_nopasswd_works() -> bool:
-    """Return True when local sudo is configured for non-interactive NOPASSWD."""
-    global _sudo_nopasswd_available
-
+    """Return True when local sudo currently works without prompting."""
     terminal_env = os.getenv("TERMINAL_ENV", "local").strip().lower() or "local"
     if terminal_env != "local":
         return False
-
-    if _sudo_nopasswd_available is not None:
-        return _sudo_nopasswd_available
 
     try:
         probe = subprocess.run(
@@ -523,11 +516,9 @@ def _sudo_nopasswd_works() -> bool:
             timeout=3,
             check=False,
         )
-        _sudo_nopasswd_available = probe.returncode == 0
+        return probe.returncode == 0
     except Exception:
-        _sudo_nopasswd_available = False
-
-    return _sudo_nopasswd_available
+        return False
 
 
 def _rewrite_compound_background(command: str) -> str:
