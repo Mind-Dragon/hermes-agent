@@ -147,6 +147,8 @@ def _check_disk_usage_warning():
 
 # Session-cached sudo password (persists until CLI exits)
 _cached_sudo_password: str = ""
+# Cache whether this host/user can run sudo without a password. None = unknown.
+_sudo_nopasswd_available: bool | None = None
 
 # Optional UI callbacks for interactive prompts. When set, these are called
 # instead of the default /dev/tty or input() readers. The CLI registers these
@@ -501,6 +503,33 @@ def _rewrite_real_sudo_invocations(command: str) -> tuple[str, bool]:
     return "".join(out), found
 
 
+def _sudo_nopasswd_works() -> bool:
+    """Return True when local sudo is configured for non-interactive NOPASSWD."""
+    global _sudo_nopasswd_available
+
+    terminal_env = os.getenv("TERMINAL_ENV", "local").strip().lower() or "local"
+    if terminal_env != "local":
+        return False
+
+    if _sudo_nopasswd_available is not None:
+        return _sudo_nopasswd_available
+
+    try:
+        probe = subprocess.run(
+            ["sudo", "-n", "true"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+            check=False,
+        )
+        _sudo_nopasswd_available = probe.returncode == 0
+    except Exception:
+        _sudo_nopasswd_available = False
+
+    return _sudo_nopasswd_available
+
+
 def _rewrite_compound_background(command: str) -> str:
     """Wrap `A && B &` (or `A || B &`) to `A && { B & }` at depth 0.
 
@@ -710,6 +739,11 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
 
     has_configured_password = "SUDO_PASSWORD" in os.environ
     sudo_password = os.environ.get("SUDO_PASSWORD", "") if has_configured_password else _cached_sudo_password
+
+    # Local hosts with sudoers NOPASSWD should not be forced through the
+    # interactive Hermes password prompt or the sudo -S password-pipe path.
+    if not has_configured_password and not sudo_password and _sudo_nopasswd_works():
+        return command, None
 
     if not has_configured_password and not sudo_password and os.getenv("HERMES_INTERACTIVE"):
         sudo_password = _prompt_for_sudo_password(timeout_seconds=45)

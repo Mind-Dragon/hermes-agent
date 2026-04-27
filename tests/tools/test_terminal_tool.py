@@ -5,10 +5,12 @@ import tools.terminal_tool as terminal_tool
 
 def setup_function():
     terminal_tool._cached_sudo_password = ""
+    terminal_tool._sudo_nopasswd_available = None
 
 
 def teardown_function():
     terminal_tool._cached_sudo_password = ""
+    terminal_tool._sudo_nopasswd_available = None
 
 
 def test_searching_for_sudo_does_not_trigger_rewrite(monkeypatch):
@@ -88,6 +90,53 @@ def test_cached_sudo_password_is_used_when_env_is_unset(monkeypatch):
 
     assert transformed == "echo ok && sudo -S -p '' whoami"
     assert sudo_stdin == "cached-pass\n"
+
+
+def test_passwordless_sudo_skips_interactive_prompt_and_rewrite(monkeypatch):
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+
+    def _fail_prompt(*_args, **_kwargs):
+        raise AssertionError("interactive sudo prompt should not run when sudo -n already works")
+
+    monkeypatch.setattr(terminal_tool, "_prompt_for_sudo_password", _fail_prompt)
+    monkeypatch.setattr(terminal_tool, "_sudo_nopasswd_works", lambda: True, raising=False)
+
+    transformed, sudo_stdin = terminal_tool._transform_sudo_command("sudo whoami")
+
+    assert transformed == "sudo whoami"
+    assert sudo_stdin is None
+
+
+def test_passwordless_sudo_probe_is_cached_for_local_terminal(monkeypatch):
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    calls = []
+
+    class Result:
+        returncode = 0
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return Result()
+
+    monkeypatch.setattr(terminal_tool.subprocess, "run", fake_run)
+
+    assert terminal_tool._sudo_nopasswd_works() is True
+    assert terminal_tool._sudo_nopasswd_works() is True
+    assert len(calls) == 1
+    assert calls[0][0] == ["sudo", "-n", "true"]
+
+
+def test_passwordless_sudo_probe_is_disabled_for_nonlocal_terminal_env(monkeypatch):
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+    def _fail_run(*_args, **_kwargs):
+        raise AssertionError("host sudo probe must not run for non-local terminal envs")
+
+    monkeypatch.setattr(terminal_tool.subprocess, "run", _fail_run)
+
+    assert terminal_tool._sudo_nopasswd_works() is False
 
 
 def test_validate_workdir_allows_windows_drive_paths():
