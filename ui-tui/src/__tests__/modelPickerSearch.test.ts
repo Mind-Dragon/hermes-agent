@@ -11,12 +11,12 @@ describe('model picker search ranking', () => {
   ]
   const labels = ['Nous Portal', 'OpenRouter', 'Kimi For Coding (kimi-coding)', 'Kimi For Coding (kimi-coding-cn)']
 
-  it('preserves order for an empty query', () => {
+  it('sorts providers alphabetically for an empty query', () => {
     expect(filterRankProviders('', providers, labels).map(row => row.provider.slug)).toEqual([
-      'nous',
-      'openrouter',
       'kimi-coding',
-      'kimi-coding-cn'
+      'kimi-coding-cn',
+      'nous',
+      'openrouter'
     ])
   })
 

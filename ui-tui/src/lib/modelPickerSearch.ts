@@ -116,6 +116,11 @@ export function compareMatchScore(a: MatchScore, b: MatchScore): number {
   return a[0] - b[0] || a[1] - b[1] || a[2] - b[2]
 }
 
+const compareProviderRows = (a: RankedProvider, b: RankedProvider) =>
+  a.provider.name.localeCompare(b.provider.name, undefined, { sensitivity: 'base', numeric: true }) ||
+  a.provider.slug.localeCompare(b.provider.slug, undefined, { sensitivity: 'base', numeric: true }) ||
+  a.index - b.index
+
 export function rankText(query: string, fields: string[]): MatchScore | null {
   const trimmed = query.trim()
 
@@ -145,7 +150,7 @@ export function filterRankProviders(query: string, providers: ModelOptionProvide
     .map((provider, index): RankedProvider | null => {
       const label = labels[index] ?? provider.name
       const directFields = [label, provider.name, provider.slug, provider.warning ?? '']
-      const directScore: MatchScore | null = trimmed ? rankText(trimmed, directFields) : [0, 0, index]
+      const directScore: MatchScore | null = trimmed ? rankText(trimmed, directFields) : [0, 0, 0]
       const modelScore = trimmed && provider.models?.length ? rankText(trimmed, provider.models) : null
       const boostedModelScore: MatchScore | null = modelScore ? [modelScore[0] + 1, modelScore[1], modelScore[2]] : null
       const score: MatchScore | null = trimmed ? bestScore(directScore, boostedModelScore) : directScore
@@ -154,5 +159,5 @@ export function filterRankProviders(query: string, providers: ModelOptionProvide
     })
     .filter((row): row is RankedProvider => Boolean(row))
 
-  return trimmed ? rows.sort((a, b) => compareMatchScore(a.score, b.score) || a.index - b.index) : rows
+  return rows.sort((a, b) => compareMatchScore(a.score, b.score) || compareProviderRows(a, b))
 }
