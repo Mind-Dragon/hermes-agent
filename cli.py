@@ -5238,6 +5238,7 @@ class HermesCLI:
             "current_provider": current_provider,
             "user_provs": user_provs,
             "custom_provs": custom_provs,
+            "search_text": "",
         }
         self._invalidate(min_interval=0.0)
 
@@ -5273,6 +5274,101 @@ class HermesCLI:
             scroll_offset = selected - visible + 1
         scroll_offset = max(0, min(scroll_offset, n - visible))
         return scroll_offset, visible
+
+    @staticmethod
+    def _model_picker_normalize_words(value: str) -> str:
+        return re.sub(r"[\s._\-/:]+", " ", str(value).lower()).strip()
+
+    @staticmethod
+    def _model_picker_subsequence_gap(needle: str, haystack: str) -> int | None:
+        if not needle:
+            return 0
+        pos = -1
+        first = -1
+        last = -1
+        for ch in needle:
+            pos = haystack.find(ch, pos + 1)
+            if pos < 0:
+                return None
+            if first < 0:
+                first = pos
+            last = pos
+        return max(0, last - first + 1 - len(needle))
+
+    @classmethod
+    def _rank_model_picker_text(cls, query: str, fields) -> tuple[int, int, int] | None:
+        query = str(query or "").strip()
+        if not query:
+            return (0, 0, 0)
+        q_raw = query.lower()
+        q_words = cls._model_picker_normalize_words(query)
+        q_compact = q_words.replace(" ", "")
+        if not q_compact:
+            return (0, 0, 0)
+
+        best: tuple[int, int, int] | None = None
+        for field in fields:
+            if field is None:
+                continue
+            text = str(field)
+            f_raw = text.lower()
+            f_words = cls._model_picker_normalize_words(text)
+            f_compact = f_words.replace(" ", "")
+            if not f_words and not f_compact:
+                continue
+            score: tuple[int, int, int] | None = None
+            if f_raw.startswith(q_raw) or f_words.startswith(q_words) or f_compact.startswith(q_compact):
+                score = (0, 0, len(text))
+            else:
+                tokens = [tok for tok in f_words.split(" ") if tok]
+                token_idx = next((i for i, tok in enumerate(tokens) if tok.startswith(q_words) or tok.startswith(q_compact)), None)
+                if token_idx is not None:
+                    score = (1, token_idx, len(text))
+                else:
+                    positions = [pos for pos in (f_raw.find(q_raw), f_words.find(q_words), f_compact.find(q_compact)) if pos >= 0]
+                    if positions:
+                        score = (2, min(positions), len(text))
+                    else:
+                        gap = cls._model_picker_subsequence_gap(q_compact, f_compact)
+                        if gap is not None:
+                            score = (3, gap, len(text))
+            if score is not None and (best is None or score < best):
+                best = score
+        return best
+
+    @classmethod
+    def _filter_model_picker_providers(cls, query: str, providers: list) -> list[dict]:
+        query = str(query or "").strip()
+        rows = []
+        for idx, provider in enumerate(providers or []):
+            models = provider.get("models") or []
+            direct_fields = [
+                provider.get("name", ""),
+                provider.get("slug", ""),
+                provider.get("warning", ""),
+            ]
+            direct_score = cls._rank_model_picker_text(query, direct_fields) if query else (0, 0, idx)
+            model_score = cls._rank_model_picker_text(query, models) if query and models else None
+            if model_score is not None:
+                model_score = (model_score[0] + 1, model_score[1], model_score[2])
+            score = min((s for s in (direct_score, model_score) if s is not None), default=None) if query else direct_score
+            if score is not None:
+                rows.append({"index": idx, "provider": provider, "score": score})
+        if query:
+            rows.sort(key=lambda row: (row["score"], row["index"]))
+        return rows
+
+    @classmethod
+    def _filter_model_picker_models(cls, query: str, models: list) -> list[dict]:
+        query = str(query or "").strip()
+        rows = []
+        for idx, model in enumerate(models or []):
+            score = cls._rank_model_picker_text(query, [model]) if query else (0, 0, idx)
+            if score is not None:
+                rows.append({"index": idx, "model": model, "score": score})
+        if query:
+            rows.sort(key=lambda row: (row["score"], row["index"]))
+        return rows
 
     def _apply_model_switch_result(self, result, persist_global: bool) -> None:
         if not result.success:
@@ -5362,10 +5458,11 @@ class HermesCLI:
         stage = state.get("stage")
         if stage == "provider":
             providers = state.get("providers") or []
-            if selected >= len(providers):
+            rows = self._filter_model_picker_providers(state.get("search_text", ""), providers)
+            if selected >= len(rows):
                 self._close_model_picker()
                 return
-            provider_data = providers[selected]
+            provider_data = rows[selected]["provider"]
             # Use the curated model list from list_authenticated_providers()
             # (same lists as `hermes model` and gateway pickers).
             # Only fall back to the live provider catalog when the curated
@@ -5383,24 +5480,27 @@ class HermesCLI:
             state["provider_data"] = provider_data
             state["model_list"] = model_list
             state["selected"] = 0
+            state["search_text"] = ""
             self._invalidate(min_interval=0.0)
             return
         if stage == "model":
             provider_data = state.get("provider_data") or {}
             model_list = state.get("model_list") or []
-            back_idx = len(model_list)
-            cancel_idx = len(model_list) + 1
+            rows = self._filter_model_picker_models(state.get("search_text", ""), model_list)
+            back_idx = len(rows)
+            cancel_idx = len(rows) + 1
             if selected == back_idx:
                 state["stage"] = "provider"
+                state["search_text"] = ""
                 state["selected"] = next((i for i, p in enumerate(state.get("providers") or []) if p.get("slug") == provider_data.get("slug")), 0)
                 self._invalidate(min_interval=0.0)
                 return
             if selected >= cancel_idx:
                 self._close_model_picker()
                 return
-            if selected < len(model_list):
+            if selected < len(rows):
                 from hermes_cli.model_switch import switch_model
-                chosen_model = model_list[selected]
+                chosen_model = rows[selected]["model"]
                 result = switch_model(
                     raw_input=chosen_model,
                     current_provider=self.provider or "",
@@ -7830,7 +7930,7 @@ class HermesCLI:
                     self._voice_continuous = False
                     self._no_speech_count = 0
                     _cprint(f"{_DIM}No speech detected 3 times, continuous mode stopped.{_RST}")
-                    return
+                    pass
             else:
                 self._no_speech_count = 0
 
@@ -9728,7 +9828,9 @@ class HermesCLI:
                 self._approval_state["selected"] = min(max_idx, self._approval_state["selected"] + 1)
                 event.app.invalidate()
 
-        # --- /model picker: arrow-key navigation ---
+        from prompt_toolkit.keys import Keys
+
+        # --- /model picker: arrow-key navigation and type-to-search ---
         @kb.add('up', filter=Condition(lambda: bool(self._model_picker_state)))
         def model_picker_up(event):
             if self._model_picker_state:
@@ -9741,18 +9843,50 @@ class HermesCLI:
             if not state:
                 return
             if state.get("stage") == "provider":
-                max_idx = len(state.get("providers") or [])
+                rows = self._filter_model_picker_providers(state.get("search_text", ""), state.get("providers") or [])
+                max_idx = len(rows)
             else:
-                max_idx = len(state.get("model_list") or []) + 1
+                rows = self._filter_model_picker_models(state.get("search_text", ""), state.get("model_list") or [])
+                max_idx = len(rows) + 1
             state["selected"] = min(max_idx, state.get("selected", 0) + 1)
             event.app.invalidate()
 
         @kb.add('escape', filter=Condition(lambda: bool(self._model_picker_state)), eager=True)
         def model_picker_escape(event):
-            """ESC closes the /model picker."""
+            """ESC clears active search first; second ESC closes the /model picker."""
+            if self._model_picker_state and self._model_picker_state.get("search_text"):
+                self._model_picker_state["search_text"] = ""
+                self._model_picker_state["selected"] = 0
+                event.app.invalidate()
+                return
             self._close_model_picker()
             event.app.current_buffer.reset()
             event.app.invalidate()
+
+        @kb.add('backspace', filter=Condition(lambda: bool(self._model_picker_state)))
+        def model_picker_backspace(event):
+            if not self._model_picker_state:
+                return
+            search = self._model_picker_state.get("search_text", "")
+            if search:
+                self._model_picker_state["search_text"] = search[:-1]
+                self._model_picker_state["selected"] = 0
+                event.app.invalidate()
+
+        @kb.add('c-u', filter=Condition(lambda: bool(self._model_picker_state)))
+        def model_picker_clear_search(event):
+            if self._model_picker_state:
+                self._model_picker_state["search_text"] = ""
+                self._model_picker_state["selected"] = 0
+                event.app.invalidate()
+
+        @kb.add(Keys.Any, filter=Condition(lambda: bool(self._model_picker_state)))
+        def model_picker_type_to_search(event):
+            data = event.data or ""
+            if data and data.isprintable():
+                self._model_picker_state["search_text"] = self._model_picker_state.get("search_text", "") + data
+                self._model_picker_state["selected"] = 0
+                event.app.invalidate()
 
         # Number keys for quick approval selection (1-9, 0 for 10th item)
         def _make_approval_number_handler(idx):
@@ -10633,22 +10767,31 @@ class HermesCLI:
             if stage == "provider":
                 title = "⚙ Model Picker — Select Provider"
                 choices = []
-                _providers = state.get("providers")
-                for p in _providers if isinstance(_providers, list) else []:
+                search = state.get("search_text", "")
+                provider_rows = HermesCLI._filter_model_picker_providers(search, state.get("providers") or [])
+                for row in provider_rows:
+                    p = row["provider"]
                     count = p.get("total_models", len(p.get("models", [])))
                     label = f"{p['name']} ({count} model{'s' if count != 1 else ''})"
                     if p.get("is_current"):
                         label += "  ← current"
                     choices.append(label)
                 choices.append("Cancel")
-                hint = f"Current: {state.get('current_model', 'unknown')} on {state.get('current_provider', 'unknown')}"
+                if search:
+                    hint = f"Filter: {search} · {len(provider_rows)} match{'es' if len(provider_rows) != 1 else ''} · Current: {state.get('current_model', 'unknown')} on {state.get('current_provider', 'unknown')}"
+                else:
+                    hint = f"Type to filter · Current: {state.get('current_model', 'unknown')} on {state.get('current_provider', 'unknown')}"
             else:
                 provider_data = state.get("provider_data") or {}
                 model_list = state.get("model_list") or []
+                search = state.get("search_text", "")
+                model_rows = HermesCLI._filter_model_picker_models(search, model_list)
                 title = f"⚙ Model Picker — {provider_data.get('name', provider_data.get('slug', 'Provider'))}"
-                choices = list(model_list) + ["← Back", "Cancel"]
-                if model_list:
-                    hint = f"Select a model ({len(model_list)} available)"
+                choices = [row["model"] for row in model_rows] + ["← Back", "Cancel"]
+                if search:
+                    hint = f"Filter: {search} · {len(model_rows)} match{'es' if len(model_rows) != 1 else ''} · {len(model_list)} total"
+                elif model_list:
+                    hint = f"Type to filter · {len(model_list)} available"
                 else:
                     hint = "No models listed for this provider. Use Back or Cancel."
 

@@ -6,6 +6,8 @@ import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ModelOptionProvider, ModelOptionsResponse } from '../gatewayTypes.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
+import { filterRankModels, filterRankProviders } from '../lib/modelPickerSearch.js'
+import type { RankedModel } from '../lib/modelPickerSearch.js'
 import type { Theme } from '../theme.js'
 
 import { OverlayHint, useOverlayKeys, windowItems, windowOffset } from './overlayControls.js'
@@ -13,6 +15,8 @@ import { OverlayHint, useOverlayKeys, windowItems, windowOffset } from './overla
 const VISIBLE = 12
 const MIN_WIDTH = 40
 const MAX_WIDTH = 90
+
+const isPrintableSearchText = (ch: string) => ch.length > 0 && Array.from(ch).every(c => c >= ' ' && c !== '\u007F')
 
 export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPickerProps) {
   const [providers, setProviders] = useState<ModelOptionProvider[]>([])
@@ -22,6 +26,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
   const [persistGlobal, setPersistGlobal] = useState(false)
   const [providerIdx, setProviderIdx] = useState(0)
   const [modelIdx, setModelIdx] = useState(0)
+  const [query, setQuery] = useState('')
   const [stage, setStage] = useState<'model' | 'provider'>('provider')
 
   const { stdout } = useStdout()
@@ -53,6 +58,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
           )
         )
         setModelIdx(0)
+        setQuery('')
         setStage('provider')
         setErr('')
         setLoading(false)
@@ -63,13 +69,73 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
       })
   }, [gw, sessionId])
 
-  const provider = providers[providerIdx]
-  const models = provider?.models ?? []
   const names = useMemo(() => providerDisplayNames(providers), [providers])
+  const providerRows = useMemo(() => filterRankProviders(query, providers, names), [names, providers, query])
+  const providerFilteredIdx = Math.max(
+    0,
+    providerRows.findIndex(row => row.index === providerIdx)
+  )
+  const provider = providers[providerIdx] ?? providerRows[providerFilteredIdx]?.provider
+  const models = provider?.models ?? []
+  const modelRows = useMemo(() => filterRankModels(query, models), [models, query])
+  const modelFilteredIdx = Math.max(
+    0,
+    modelRows.findIndex(row => row.index === modelIdx)
+  )
+  const selectedProviderRow = providerRows[providerFilteredIdx]
+
+  useEffect(() => {
+    if (!query || stage !== 'provider') {
+      return
+    }
+
+    setProviderIdx(providerRows[0]?.index ?? 0)
+  }, [providerRows, query, stage])
+
+  useEffect(() => {
+    if (!query || stage !== 'model') {
+      return
+    }
+
+    setModelIdx(modelRows[0]?.index ?? 0)
+  }, [modelRows, query, stage])
+
+  useEffect(() => {
+    if (stage !== 'provider') {
+      return
+    }
+
+    if (!providerRows.length) {
+      setProviderIdx(0)
+
+      return
+    }
+
+    if (!providerRows.some(row => row.index === providerIdx)) {
+      setProviderIdx(providerRows[0]!.index)
+    }
+  }, [providerIdx, providerRows, stage])
+
+  useEffect(() => {
+    if (stage !== 'model') {
+      return
+    }
+
+    if (!modelRows.length) {
+      setModelIdx(0)
+
+      return
+    }
+
+    if (!modelRows.some(row => row.index === modelIdx)) {
+      setModelIdx(modelRows[0]!.index)
+    }
+  }, [modelIdx, modelRows, stage])
 
   const back = () => {
     if (stage === 'model') {
       setStage('provider')
+      setQuery('')
       setModelIdx(0)
 
       return
@@ -78,32 +144,72 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
     onCancel()
   }
 
-  useOverlayKeys({ onBack: back, onClose: onCancel })
+  useOverlayKeys({ disabled: Boolean(query), onBack: back, onClose: onCancel })
 
   useInput((ch, key) => {
-    const count = stage === 'provider' ? providers.length : models.length
-    const sel = stage === 'provider' ? providerIdx : modelIdx
-    const setSel = stage === 'provider' ? setProviderIdx : setModelIdx
-
-    if (key.upArrow && sel > 0) {
-      setSel(v => v - 1)
+    if (key.escape) {
+      if (query) {
+        setQuery('')
+        setProviderIdx(providerRows[0]?.index ?? 0)
+        setModelIdx(modelRows[0]?.index ?? 0)
+      }
 
       return
     }
 
-    if (key.downArrow && sel < count - 1) {
-      setSel(v => v + 1)
+    if (key.backspace || key.delete) {
+      if (query) {
+        setQuery(v => v.slice(0, -1))
+      }
+
+      return
+    }
+
+    if (key.ctrl && ch.toLowerCase() === 'u') {
+      setQuery('')
+
+      return
+    }
+
+    if (key.ctrl && ch.toLowerCase() === 'g') {
+      setPersistGlobal(v => !v)
+
+      return
+    }
+
+    const rows = stage === 'provider' ? providerRows : modelRows
+    const cursor = stage === 'provider' ? providerFilteredIdx : modelFilteredIdx
+
+    if (key.upArrow && cursor > 0) {
+      const next = rows[cursor - 1]
+
+      if (next) {
+        stage === 'provider' ? setProviderIdx(next.index) : setModelIdx(next.index)
+      }
+
+      return
+    }
+
+    if (key.downArrow && cursor < rows.length - 1) {
+      const next = rows[cursor + 1]
+
+      if (next) {
+        stage === 'provider' ? setProviderIdx(next.index) : setModelIdx(next.index)
+      }
 
       return
     }
 
     if (key.return) {
       if (stage === 'provider') {
-        if (!provider) {
+        const nextProvider = providers[providerIdx] ?? selectedProviderRow?.provider
+
+        if (!nextProvider) {
           return
         }
 
         setStage('model')
+        setQuery('')
         setModelIdx(0)
 
         return
@@ -115,32 +221,46 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
         onSelect(`${model} --provider ${provider.slug}${persistGlobal ? ' --global' : ` ${TUI_SESSION_MODEL_FLAG}`}`)
       } else {
         setStage('provider')
+        setQuery('')
       }
 
       return
     }
 
-    if (ch.toLowerCase() === 'g') {
-      setPersistGlobal(v => !v)
-
+    if (!query && ch === 'q') {
       return
     }
 
     const n = ch === '0' ? 10 : parseInt(ch, 10)
 
-    if (!Number.isNaN(n) && n >= 1 && n <= Math.min(10, count)) {
-      const offset = windowOffset(count, sel, VISIBLE)
+    if (!query && !Number.isNaN(n) && n >= 1 && n <= Math.min(10, rows.length)) {
+      const offset = windowOffset(rows.length, cursor, VISIBLE)
+      const next = rows[offset + n - 1]
+
+      if (!next) {
+        return
+      }
 
       if (stage === 'provider') {
-        const next = offset + n - 1
+        setProviderIdx(next.index)
+      } else if (provider) {
+        const model = models[next.index]
 
-        if (providers[next]) {
-          setProviderIdx(next)
+        if (model) {
+          onSelect(`${model} --provider ${provider.slug}${persistGlobal ? ' --global' : ` ${TUI_SESSION_MODEL_FLAG}`}`)
         }
-      } else if (provider && models[offset + n - 1]) {
-        onSelect(
-          `${models[offset + n - 1]} --provider ${provider.slug}${persistGlobal ? ' --global' : ` ${TUI_SESSION_MODEL_FLAG}`}`
-        )
+      }
+
+      return
+    }
+
+    if (!key.ctrl && !key.meta && !key.super && isPrintableSearchText(ch)) {
+      setQuery(v => v + ch)
+
+      if (stage === 'provider') {
+        setProviderIdx(0)
+      } else {
+        setModelIdx(0)
       }
     }
   })
@@ -168,11 +288,12 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
   }
 
   if (stage === 'provider') {
-    const rows = providers.map(
-      (p, i) => `${p.is_current ? '*' : ' '} ${names[i]} · ${p.total_models ?? p.models?.length ?? 0} models`
-    )
-
-    const { items, offset } = windowItems(rows, providerIdx, VISIBLE)
+    const rows = providerRows.map(row => ({
+      row,
+      text: `${row.provider.is_current ? '*' : ' '} ${row.label} · ${row.provider.total_models ?? row.provider.models?.length ?? 0} models`
+    }))
+    const { items, offset } = windowItems(rows, providerFilteredIdx, VISIBLE)
+    const matchText = query ? `Filter: ${query} · ${providerRows.length} match${providerRows.length === 1 ? '' : 'es'}` : 'Type to filter · Enter to continue'
 
     return (
       <Box flexDirection="column" width={width}>
@@ -181,7 +302,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
         </Text>
 
         <Text color={t.color.muted} wrap="truncate-end">
-          Full model IDs on the next step · Enter to continue
+          {matchText}
         </Text>
 
         <Text color={t.color.muted} wrap="truncate-end">
@@ -195,23 +316,31 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
         </Text>
 
         {Array.from({ length: VISIBLE }, (_, i) => {
-          const row = items[i]
+          const item = items[i]
           const idx = offset + i
 
-          return row ? (
+          if (!item) {
+            return !providerRows.length && i === 0 ? (
+              <Text color={t.color.muted} key="empty-provider-search" wrap="truncate-end">
+                no matches
+              </Text>
+            ) : (
+              <Text color={t.color.muted} key={`pad-${i}`} wrap="truncate-end">
+                {' '}
+              </Text>
+            )
+          }
+
+          return (
             <Text
-              bold={providerIdx === idx}
-              color={providerIdx === idx ? t.color.accent : t.color.muted}
-              inverse={providerIdx === idx}
-              key={providers[idx]?.slug ?? `row-${idx}`}
+              bold={providerFilteredIdx === idx}
+              color={providerFilteredIdx === idx ? t.color.accent : t.color.muted}
+              inverse={providerFilteredIdx === idx}
+              key={`${item.row.provider.slug}:${item.row.index}`}
               wrap="truncate-end"
             >
-              {providerIdx === idx ? '▸ ' : '  '}
-              {i + 1}. {row}
-            </Text>
-          ) : (
-            <Text color={t.color.muted} key={`pad-${i}`} wrap="truncate-end">
-              {' '}
+              {providerFilteredIdx === idx ? '▸ ' : '  '}
+              {i + 1}. {item.text}
             </Text>
           )
         })}
@@ -221,14 +350,20 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
         </Text>
 
         <Text color={t.color.muted} wrap="truncate-end">
-          persist: {persistGlobal ? 'global' : 'session'} · g toggle
+          persist: {persistGlobal ? 'global' : 'session'} · Ctrl-G toggle
         </Text>
-        <OverlayHint t={t}>↑/↓ select · Enter choose · 1-9,0 quick · Esc/q cancel</OverlayHint>
+        <OverlayHint t={t}>
+          {query ? 'type filter · Backspace edit · Esc/Ctrl-U clear · Enter choose' : '↑/↓ select · Enter choose · 1-9,0 quick · Ctrl-G persist · Esc/q cancel'}
+        </OverlayHint>
       </Box>
     )
   }
 
-  const { items, offset } = windowItems(models, modelIdx, VISIBLE)
+  const { items, offset } = windowItems(modelRows, modelFilteredIdx, VISIBLE)
+  const selectedProviderLabel = selectedProviderRow?.label ?? names[providerIdx] ?? provider?.name ?? '(unknown provider)'
+  const matchText = query
+    ? `Filter: ${query} · ${modelRows.length} match${modelRows.length === 1 ? '' : 'es'} · ${models.length} total`
+    : `${selectedProviderLabel} · Type to filter · Esc back`
 
   return (
     <Box flexDirection="column" width={width}>
@@ -237,7 +372,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
       </Text>
 
       <Text color={t.color.muted} wrap="truncate-end">
-        {names[providerIdx] || '(unknown provider)'} · Esc back
+        {matchText}
       </Text>
       <Text color={t.color.label} wrap="truncate-end">
         {provider?.warning ? `warning: ${provider.warning}` : ' '}
@@ -247,13 +382,13 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
       </Text>
 
       {Array.from({ length: VISIBLE }, (_, i) => {
-        const row = items[i]
+        const row = items[i] as RankedModel | undefined
         const idx = offset + i
 
         if (!row) {
-          return !models.length && i === 0 ? (
+          return !modelRows.length && i === 0 ? (
             <Text color={t.color.muted} key="empty" wrap="truncate-end">
-              no models listed for this provider
+              {models.length ? 'no matches' : 'no models listed for this provider'}
             </Text>
           ) : (
             <Text color={t.color.muted} key={`pad-${i}`} wrap="truncate-end">
@@ -262,31 +397,35 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
           )
         }
 
-        const prefix = modelIdx === idx ? '▸ ' : row === currentModel ? '* ' : '  '
+        const prefix = modelFilteredIdx === idx ? '▸ ' : row.model === currentModel ? '* ' : '  '
 
         return (
           <Text
-            bold={modelIdx === idx}
-            color={modelIdx === idx ? t.color.accent : t.color.muted}
-            inverse={modelIdx === idx}
-            key={`${provider?.slug ?? 'prov'}:${idx}:${row}`}
+            bold={modelFilteredIdx === idx}
+            color={modelFilteredIdx === idx ? t.color.accent : t.color.muted}
+            inverse={modelFilteredIdx === idx}
+            key={`${provider?.slug ?? 'prov'}:${row.index}:${row.model}`}
             wrap="truncate-end"
           >
             {prefix}
-            {i + 1}. {row}
+            {i + 1}. {row.model}
           </Text>
         )
       })}
 
       <Text color={t.color.muted} wrap="truncate-end">
-        {offset + VISIBLE < models.length ? ` ↓ ${models.length - offset - VISIBLE} more` : ' '}
+        {offset + VISIBLE < modelRows.length ? ` ↓ ${modelRows.length - offset - VISIBLE} more` : ' '}
       </Text>
 
       <Text color={t.color.muted} wrap="truncate-end">
-        persist: {persistGlobal ? 'global' : 'session'} · g toggle
+        persist: {persistGlobal ? 'global' : 'session'} · Ctrl-G toggle
       </Text>
       <OverlayHint t={t}>
-        {models.length ? '↑/↓ select · Enter switch · 1-9,0 quick · Esc back · q close' : 'Enter/Esc back · q close'}
+        {query
+          ? 'type filter · Backspace edit · Esc/Ctrl-U clear · Enter switch'
+          : models.length
+            ? '↑/↓ select · Enter switch · 1-9,0 quick · Ctrl-G persist · Esc back · q close'
+            : 'Enter/Esc back · q close'}
       </OverlayHint>
     </Box>
   )
