@@ -30,6 +30,7 @@ from hermes_cli.providers import (
     determine_api_mode,
     get_label,
     is_aggregator,
+    provider_plan_kind,
     resolve_provider_full,
 )
 from hermes_cli.model_normalize import (
@@ -1133,6 +1134,19 @@ def list_authenticated_providers(
             live = [current_model]
         curated["lmstudio"] = live
 
+    def _picker_plan(provider_id: str, *, base_url: str = "") -> str:
+        plan = provider_plan_kind(provider_id, base_url)
+        if plan == "coding":
+            return plan
+        if provider_id in {"zai", "kimi-coding", "kimi-coding-cn"} and not base_url:
+            try:
+                from hermes_cli.auth import get_auth_status
+                status = get_auth_status(provider_id)
+                plan = provider_plan_kind(provider_id, str((status or {}).get("base_url") or ""))
+            except Exception:
+                pass
+        return plan
+
     # --- 1. Check Hermes-mapped providers ---
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
         # Skip aliases that map to the same models.dev provider (e.g.
@@ -1194,6 +1208,7 @@ def list_authenticated_providers(
             "models": top,
             "total_models": total,
             "source": "built-in",
+            "plan": _picker_plan(slug),
         })
         seen_slugs.add(slug.lower())
         seen_mdev_ids.add(mdev_id)
@@ -1309,6 +1324,7 @@ def list_authenticated_providers(
             "models": top,
             "total_models": total,
             "source": "hermes",
+            "plan": _picker_plan(hermes_slug),
         })
         seen_slugs.add(pid.lower())
         seen_slugs.add(hermes_slug.lower())
@@ -1390,6 +1406,7 @@ def list_authenticated_providers(
             "models": _cp_top,
             "total_models": _cp_total,
             "source": "canonical",
+            "plan": _picker_plan(_cp.slug),
         })
         seen_slugs.add(_cp.slug.lower())
         _record_builtin_endpoint(_cp.slug)
@@ -1480,6 +1497,7 @@ def list_authenticated_providers(
                 "total_models": len(models_list) if models_list else 0,
                 "source": "user-config",
                 "api_url": api_url,
+                "plan": _picker_plan(ep_name, base_url=api_url),
             })
             seen_slugs.add(ep_name.lower())
             seen_slugs.add(custom_provider_slug(display_name).lower())
@@ -1630,6 +1648,7 @@ def list_authenticated_providers(
                 "total_models": len(grp["models"]),
                 "source": "user-config",
                 "api_url": grp["api_url"],
+                "plan": _picker_plan(slug, base_url=grp["api_url"]),
             })
             seen_slugs.add(slug.lower())
             _section4_emitted_slugs.add(slug.lower())

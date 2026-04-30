@@ -1004,6 +1004,11 @@ class SlashCommandCompleter(Completer):
         self._file_cache: list[str] = []
         self._file_cache_time: float = 0.0
         self._file_cache_cwd: str = ""
+        # Cached /model provider catalog data. Slash completions are called on
+        # every keypress, so keep the live provider list and per-provider model
+        # catalogs warm within the completer instance.
+        self._model_provider_rows_cache: list[dict[str, Any]] | None = None
+        self._provider_model_ids_cache: dict[str, tuple[str, ...]] = {}
 
     def _command_allowed(self, slash_command: str) -> bool:
         if self._command_filter is None:
@@ -1020,6 +1025,126 @@ class SlashCommandCompleter(Completer):
             return self._skill_commands_provider() or {}
         except Exception:
             return {}
+
+    def _model_provider_rows(self) -> list[dict[str, Any]]:
+        """Return authenticated providers for model completions.
+
+        Uses the same config context as the model picker so current-provider
+        ordering and LM Studio fallback rows stay aligned with the rest of the
+        CLI.
+        """
+        if self._model_provider_rows_cache is None:
+            try:
+                from hermes_cli.config import load_config
+                from hermes_cli.model_switch import list_authenticated_providers
+
+                cfg = load_config()
+                model_cfg = cfg.get("model")
+                if isinstance(model_cfg, dict):
+                    current_model = model_cfg.get("default", model_cfg.get("name", "")) or ""
+                    current_provider = model_cfg.get("provider", "") or ""
+                    current_base_url = model_cfg.get("base_url", "") or ""
+                else:
+                    current_model = str(model_cfg) if model_cfg else ""
+                    current_provider = ""
+                    current_base_url = ""
+
+                self._model_provider_rows_cache = list_authenticated_providers(
+                    current_provider=current_provider,
+                    current_base_url=current_base_url,
+                    current_model=current_model,
+                )
+            except Exception:
+                self._model_provider_rows_cache = []
+        return self._model_provider_rows_cache
+
+    def _provider_model_ids(self, provider: str) -> tuple[str, ...]:
+        """Cache a provider's catalog for the lifetime of this completer."""
+        slug = (provider or "").strip().lower()
+        if not slug:
+            return ()
+        cached = self._provider_model_ids_cache.get(slug)
+        if cached is not None:
+            return cached
+        try:
+            from hermes_cli.models import provider_model_ids
+
+            ids = tuple(provider_model_ids(provider))
+        except Exception:
+            ids = ()
+        self._provider_model_ids_cache[slug] = ids
+        return ids
+
+    @staticmethod
+    def _normalize_model_completion_key(text: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", (text or "").lower())
+
+    @staticmethod
+    def _model_picker_sort_key(value: str):
+        parts = re.findall(r"[a-z]+|\d+", str(value).strip().casefold())
+        key = []
+        for part in parts:
+            if part.isdigit():
+                key.append((0, -int(part), len(part)))
+            else:
+                key.append((1, part))
+        return tuple(key)
+
+    def _rank_model_completion_providers(
+        self,
+        query_key: str,
+        providers: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        ranked: list[dict[str, Any]] = []
+        for idx, provider in enumerate(providers or []):
+            slug = str(provider.get("slug") or "").strip()
+            if not slug:
+                continue
+            provider_name = str(provider.get("name") or slug).strip() or slug
+            provider_text = self._normalize_model_completion_key(
+                f"{provider_name} {slug} {provider.get('warning', '')}"
+            )
+            preview_models: list[str] = []
+            seen_preview: set[str] = set()
+            for model in provider.get("models") or []:
+                model_id = str(model or "").strip()
+                if not model_id:
+                    continue
+                model_key = self._normalize_model_completion_key(model_id)
+                if model_key in seen_preview:
+                    continue
+                seen_preview.add(model_key)
+                if query_key and query_key not in model_key and query_key not in provider_text:
+                    continue
+                preview_models.append(model_id)
+
+            direct_match = not query_key or query_key in provider_text
+            if query_key and not direct_match and not preview_models:
+                continue
+
+            if not preview_models:
+                preview_models = [str(model or "").strip() for model in provider.get("models") or [] if str(model or "").strip()]
+            preview_models.sort(key=self._model_picker_sort_key)
+            best_model = preview_models[0] if preview_models else ""
+            ranked.append({
+                "index": idx,
+                "provider": provider,
+                "provider_name": provider_name,
+                "provider_text": provider_text,
+                "preview_models": preview_models,
+                "best_model": best_model,
+                "score": (
+                    0 if direct_match else 1,
+                    0 if provider.get("plan") == "coding" else 1,
+                    self._model_picker_sort_key(best_model) if best_model else (),
+                    provider_name.casefold(),
+                    slug.casefold(),
+                    idx,
+                ),
+            })
+
+        ranked.sort(key=lambda row: row["score"])
+        return ranked
 
     @staticmethod
     def _completion_text(cmd_name: str, word: str) -> str:
@@ -1382,37 +1507,122 @@ class SlashCommandCompleter(Completer):
             pass
 
     def _model_completions(self, sub_text: str, sub_lower: str):
-        """Yield completions for /model from config aliases + built-in aliases."""
-        seen = set()
-        # Config-based direct aliases (preferred — include provider info)
-        try:
-            from hermes_cli.model_switch import (
-                _ensure_direct_aliases, DIRECT_ALIASES, MODEL_ALIASES,
-            )
-            _ensure_direct_aliases()
-            for name, da in DIRECT_ALIASES.items():
-                if name.startswith(sub_lower) and name != sub_lower:
-                    seen.add(name)
+        """Yield completions for /model from real authenticated provider catalogs."""
+        query_key = self._normalize_model_completion_key(sub_text)
+        providers = self._model_provider_rows()
+        if not providers:
+            providers = []
+
+        ranked_rows = self._rank_model_completion_providers(query_key, providers)
+        ranked_slugs = {
+            str(row["provider"].get("slug") or "").strip().lower()
+            for row in ranked_rows
+            if str(row["provider"].get("slug") or "").strip()
+        }
+        provider_order = [row["provider"] for row in ranked_rows]
+        provider_order.extend(
+            provider
+            for provider in providers
+            if str(provider.get("slug") or "").strip().lower() not in ranked_slugs
+        )
+
+        seen: set[str] = set()
+        seen_models: set[str] = set()
+
+        def _meta(provider: dict[str, Any]) -> str:
+            total_models = provider.get("total_models")
+            if isinstance(total_models, int) and total_models > 0:
+                return f"{total_models} models"
+            return "models"
+
+        # Fast path: broad queries should be instant. The provider rows already
+        # carry a curated top-model preview, so short queries can be answered
+        # without fetching every live catalog.
+        if ranked_rows and (not query_key or len(query_key) <= 3):
+            for row in ranked_rows:
+                provider = row["provider"]
+                provider_name = row["provider_name"]
+                provider_text = row["provider_text"]
+                meta = _meta(provider)
+                for model_id in row["preview_models"]:
+                    model_id = str(model_id or "").strip()
+                    if not model_id:
+                        continue
+                    model_key = self._normalize_model_completion_key(model_id)
+                    if model_key in seen_models:
+                        continue
+                    if query_key and query_key not in model_key and query_key not in provider_text:
+                        continue
+                    seen_models.add(model_key)
+                    seen.add(model_id)
                     yield Completion(
-                        name,
+                        model_id,
                         start_position=-len(sub_text),
-                        display=name,
-                        display_meta=f"{da.model} ({da.provider})",
+                        display=f"{provider_name} · {model_id}",
+                        display_meta=meta,
                     )
-            # Built-in catalog aliases not already covered
-            for name in sorted(MODEL_ALIASES.keys()):
+
+            # LM Studio: surface locally-loaded models. Gated on the user actually
+            # having LM Studio configured (env var or auth-store entry) so we
+            # don't probe 127.0.0.1 on every keystroke for users who don't use it.
+            for name in _lmstudio_completion_models():
                 if name in seen:
                     continue
                 if name.startswith(sub_lower) and name != sub_lower:
-                    identity = MODEL_ALIASES[name]
                     yield Completion(
                         name,
                         start_position=-len(sub_text),
                         display=name,
-                        display_meta=f"{identity.vendor}/{identity.family}",
+                        display_meta="LM Studio",
                     )
-        except Exception:
-            pass
+            return
+
+        for provider in provider_order:
+            slug = str(provider.get("slug") or "").strip().lower()
+            if not slug:
+                continue
+            provider_name = str(provider.get("name") or slug).strip() or slug
+            meta = _meta(provider)
+
+            model_ids = self._provider_model_ids(slug)
+            if not model_ids:
+                model_ids = tuple(
+                    str(model or "").strip()
+                    for model in provider.get("models") or []
+                    if str(model or "").strip()
+                )
+            if not model_ids:
+                continue
+
+            seen_models_for_provider: set[str] = set()
+            emitted = 0
+            blank_query_limit = 8 if not query_key else None
+            for model_id in model_ids:
+                model_id = str(model_id or "").strip()
+                if not model_id:
+                    continue
+                model_key = self._normalize_model_completion_key(model_id)
+                if model_key in seen_models_for_provider:
+                    continue
+                if query_key:
+                    haystack = self._normalize_model_completion_key(
+                        f"{provider_name} {slug} {model_id}"
+                    )
+                    if query_key not in haystack:
+                        continue
+                elif blank_query_limit is not None and emitted >= blank_query_limit:
+                    break
+
+                seen_models_for_provider.add(model_key)
+                emitted += 1
+                seen.add(model_id)
+                yield Completion(
+                    model_id,
+                    start_position=-len(sub_text),
+                    display=f"{provider_name} · {model_id}",
+                    display_meta=meta,
+                )
+
         # LM Studio: surface locally-loaded models. Gated on the user actually
         # having LM Studio configured (env var or auth-store entry) so we
         # don't probe 127.0.0.1 on every keystroke for users who don't use it.
@@ -1449,16 +1659,16 @@ class SlashCommandCompleter(Completer):
             sub_lower = sub_text.lower()
 
             # Dynamic completions for commands with runtime lists
-            if " " not in sub_text:
-                if base_cmd == "/model":
-                    yield from self._model_completions(sub_text, sub_lower)
-                    return
-                if base_cmd == "/skin":
-                    yield from self._skin_completions(sub_text, sub_lower)
-                    return
-                if base_cmd == "/personality":
-                    yield from self._personality_completions(sub_text, sub_lower)
-                    return
+            resolved_cmd = resolve_command(base_cmd)
+            if resolved_cmd and resolved_cmd.name == "model":
+                yield from self._model_completions(sub_text, sub_lower)
+                return
+            if base_cmd == "/skin":
+                yield from self._skin_completions(sub_text, sub_lower)
+                return
+            if base_cmd == "/personality":
+                yield from self._personality_completions(sub_text, sub_lower)
+                return
 
             # Static subcommand completions
             if " " not in sub_text and base_cmd in SUBCOMMANDS and self._command_allowed(base_cmd):

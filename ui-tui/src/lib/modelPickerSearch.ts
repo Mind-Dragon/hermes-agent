@@ -60,6 +60,45 @@ const bestScore = (a: MatchScore | null, b: MatchScore | null) => {
   return compareMatchScore(a, b) <= 0 ? a : b
 }
 
+const compareModelName = (a: string, b: string): number => {
+  const left = normalizeWords(a).split(' ').filter(Boolean)
+  const right = normalizeWords(b).split(' ').filter(Boolean)
+  const limit = Math.min(left.length, right.length)
+
+  for (let i = 0; i < limit; i++) {
+    const aPart = left[i]!
+    const bPart = right[i]!
+    const aNumeric = /^\d+$/.test(aPart)
+    const bNumeric = /^\d+$/.test(bPart)
+
+    if (aNumeric && bNumeric) {
+      const numericDiff = Number(bPart) - Number(aPart)
+
+      if (numericDiff) {
+        return numericDiff
+      }
+
+      if (aPart.length !== bPart.length) {
+        return aPart.length - bPart.length
+      }
+
+      continue
+    }
+
+    if (aNumeric !== bNumeric) {
+      return aNumeric ? -1 : 1
+    }
+
+    const textDiff = aPart.localeCompare(bPart, undefined, { sensitivity: 'base' })
+
+    if (textDiff) {
+      return textDiff
+    }
+  }
+
+  return left.length - right.length || a.localeCompare(b, undefined, { sensitivity: 'base' })
+}
+
 const rankField = (query: string, field: string): MatchScore | null => {
   const qWords = normalizeWords(query)
   const qCompact = normalizeCompact(query)
@@ -114,13 +153,20 @@ const rankField = (query: string, field: string): MatchScore | null => {
 }
 
 export function compareMatchScore(a: MatchScore, b: MatchScore): number {
-  return a[0] - b[0] || a[1] - b[1] || a[2] - b[2]
+  return a[0] - b[0] || a[1] - b[1]
 }
 
 const compareProviderRows = (a: RankedProvider, b: RankedProvider) =>
   a.provider.name.localeCompare(b.provider.name, undefined, { sensitivity: 'base', numeric: true }) ||
   a.provider.slug.localeCompare(b.provider.slug, undefined, { sensitivity: 'base', numeric: true }) ||
   a.index - b.index
+
+const compareProviderPlan = (a: RankedProvider, b: RankedProvider) => {
+  const aPlan = a.provider.plan === 'coding' ? 0 : 1
+  const bPlan = b.provider.plan === 'coding' ? 0 : 1
+
+  return aPlan - bPlan
+}
 
 export function rankText(query: string, fields: string[]): MatchScore | null {
   const trimmed = query.trim()
@@ -142,7 +188,11 @@ export function filterRankModels(query: string, models: string[]): RankedModel[]
     })
     .filter((row): row is RankedModel => Boolean(row))
 
-  return trimmed ? rows.sort((a, b) => compareMatchScore(a.score, b.score) || a.index - b.index) : rows
+  if (!trimmed) {
+    return rows.sort((a, b) => compareModelName(a.model, b.model) || a.index - b.index)
+  }
+
+  return rows.sort((a, b) => compareMatchScore(a.score, b.score) || compareModelName(a.model, b.model) || a.index - b.index)
 }
 
 export function filterRankProviders(query: string, providers: ModelOptionProvider[], labels: string[]): RankedProvider[] {
@@ -162,5 +212,5 @@ export function filterRankProviders(query: string, providers: ModelOptionProvide
     })
     .filter((row): row is RankedProvider => Boolean(row))
 
-  return rows.sort((a, b) => compareMatchScore(a.score, b.score) || compareProviderRows(a, b))
+  return rows.sort((a, b) => compareMatchScore(a.score, b.score) || compareProviderPlan(a, b) || compareProviderRows(a, b))
 }

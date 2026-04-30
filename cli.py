@@ -5282,6 +5282,17 @@ class HermesCLI:
         return re.sub(r"[\s._\-/:]+", " ", str(value).lower()).strip()
 
     @staticmethod
+    def _model_picker_sort_key(value: str):
+        parts = re.findall(r"[a-z]+|\d+", str(value).strip().casefold())
+        key = []
+        for part in parts:
+            if part.isdigit():
+                key.append((0, -int(part), len(part)))
+            else:
+                key.append((1, part))
+        return tuple(key)
+
+    @staticmethod
     def _model_picker_subsequence_gap(needle: str, haystack: str) -> int | None:
         if not needle:
             return 0
@@ -5353,11 +5364,17 @@ class HermesCLI:
             model_score = cls._rank_model_picker_text(query, models) if query and models else None
             if model_score is not None:
                 model_score = (model_score[0] + 1, model_score[1], model_score[2])
-            score = min((s for s in (direct_score, model_score) if s is not None), default=None) if query else direct_score
+            score = min((s for s in (direct_score, model_score) if s is not None), default=None, key=lambda s: s[:2]) if query else direct_score
             if score is not None:
                 rows.append({"index": idx, "provider": provider, "score": score})
         if query:
-            rows.sort(key=lambda row: (row["score"], row["index"]))
+            rows.sort(key=lambda row: (
+                row["score"][:2],
+                0 if row["provider"].get("plan") == "coding" else 1,
+                str(row["provider"].get("name", "")).casefold(),
+                str(row["provider"].get("slug", "")).casefold(),
+                row["index"],
+            ))
         return rows
 
     @classmethod
@@ -5369,7 +5386,9 @@ class HermesCLI:
             if score is not None:
                 rows.append({"index": idx, "model": model, "score": score})
         if query:
-            rows.sort(key=lambda row: (row["score"], row["index"]))
+            rows.sort(key=lambda row: (row["score"][:2], cls._model_picker_sort_key(row["model"]), row["index"]))
+        else:
+            rows.sort(key=lambda row: (cls._model_picker_sort_key(row["model"]), row["index"]))
         return rows
 
     def _apply_model_switch_result(self, result, persist_global: bool) -> None:

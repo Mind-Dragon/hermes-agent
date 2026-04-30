@@ -39,12 +39,50 @@ class TestModelPickerSearch:
 
         assert [row["provider"]["slug"] for row in rows] == ["openrouter"]
 
+    def test_provider_search_prefers_coding_plan_ties(self):
+        providers = [
+            {"name": "OpenAI", "slug": "openai", "plan": "api", "models": ["openai/gpt-5.5"]},
+            {"name": "OpenAI Codex", "slug": "openai-codex", "plan": "coding", "models": ["openai/gpt-5.5"]},
+            {"name": "Nous Portal", "slug": "nous", "plan": "api", "models": ["deepseek/deepseek-v3"]},
+        ]
+
+        rows = HermesCLI._filter_model_picker_providers("gpt55", providers)
+
+        assert [row["provider"]["slug"] for row in rows] == ["openai-codex", "openai"]
+
+    def test_provider_search_prefers_coding_plan_for_broad_gpt_queries(self):
+        providers = [
+            {"name": "OpenAI", "slug": "openai", "plan": "api", "models": ["openai/gpt-5.4"]},
+            {"name": "OpenAI Codex", "slug": "openai-codex", "plan": "coding", "models": ["openai/gpt-5.5"]},
+        ]
+
+        rows = HermesCLI._filter_model_picker_providers("gpt", providers)
+
+        assert [row["provider"]["slug"] for row in rows] == ["openai-codex", "openai"]
+
     def test_model_prefix_substring_fuzzy_order(self):
         models = ["openai/not-kimi", "kimi-k2.6-FCED", "k-x-i-m-i-test"]
 
         rows = HermesCLI._filter_model_picker_models("kimi", models)
 
         assert [row["model"] for row in rows] == ["kimi-k2.6-FCED", "openai/not-kimi", "k-x-i-m-i-test"]
+
+    def test_model_sort_places_numeric_versions_first(self):
+        models = [
+            "openai/gpt-4o",
+            "openai/gpt-4.1-nano",
+            "openai/gpt-5.5",
+            "openai/gpt-4.1-mini",
+        ]
+
+        rows = HermesCLI._filter_model_picker_models("", models)
+
+        assert [row["model"] for row in rows] == [
+            "openai/gpt-5.5",
+            "openai/gpt-4.1-mini",
+            "openai/gpt-4.1-nano",
+            "openai/gpt-4o",
+        ]
 
     def test_model_search_matches_across_separators(self):
         models = ["openai/gpt-5.5", "openai/gpt-4.1"]

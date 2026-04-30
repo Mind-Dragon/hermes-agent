@@ -6,7 +6,7 @@ Covers:
 - /model command updating requested_provider for session persistence
 - Direct alias resolution from config.yaml model_aliases
 - Reverse lookup: full model names match direct aliases
-- /model tab completion for model aliases
+- /model tab completion uses live provider catalogs and exact model IDs
 """
 
 import os
@@ -185,65 +185,154 @@ class TestModelSwitchPersistence:
 # ---------------------------------------------------------------------------
 
 class TestModelTabCompletion:
-    """SlashCommandCompleter provides model alias completions for /model."""
+    """SlashCommandCompleter should surface live provider catalogs for /model."""
 
-    def test_model_completions_yields_direct_aliases(self, monkeypatch):
-        """_model_completions yields direct aliases with model and provider info."""
+    def test_model_completions_use_live_provider_catalogs(self, monkeypatch):
+        """/model should show exact live model IDs, not ambiguous aliases."""
+        import hermes_cli.commands as commands
         from hermes_cli.commands import SlashCommandCompleter
-        from hermes_cli.model_switch import DirectAlias
         import hermes_cli.model_switch as ms
+        import hermes_cli.models as models
 
-        test_aliases = {
-            "opus": DirectAlias("claude-opus-4-6", "anthropic", ""),
-            "qwen": DirectAlias("qwen3.5:397b", "custom", "https://ollama.com/v1"),
-        }
-        monkeypatch.setattr(ms, "DIRECT_ALIASES", test_aliases)
+        monkeypatch.setattr(commands, "_lmstudio_completion_models", lambda: [])
+        monkeypatch.setattr(
+            ms,
+            "list_authenticated_providers",
+            lambda **kwargs: [
+                {
+                    "slug": "openai",
+                    "name": "OpenAI",
+                    "total_models": 42,
+                    "source": "built-in",
+                    "is_current": False,
+                    "is_user_defined": False,
+                },
+                {
+                    "slug": "anthropic",
+                    "name": "Anthropic",
+                    "total_models": 17,
+                    "source": "built-in",
+                    "is_current": False,
+                    "is_user_defined": False,
+                },
+            ],
+        )
+        monkeypatch.setattr(
+            models,
+            "provider_model_ids",
+            lambda provider, **kwargs: {
+                "openai": ["gpt-5.5", "gpt-5.4-mini", "gpt-4.1"],
+                "anthropic": ["claude-sonnet-4.6", "claude-haiku-4.5"],
+            }.get(provider, []),
+        )
 
         completer = SlashCommandCompleter()
-        completions = list(completer._model_completions("", ""))
+        completions = list(completer._model_completions("gpt", "gpt"))
 
-        names = [c.text for c in completions]
-        assert "opus" in names
-        assert "qwen" in names
+        texts = [c.text for c in completions]
+        assert "gpt5" not in texts
+        assert "gpt-5.5" in texts
+        assert "gpt-5.4-mini" in texts
+        assert all("claude" not in text for text in texts)
 
-    def test_model_completions_filters_by_prefix(self, monkeypatch):
-        """Completions filter by typed prefix."""
+        gpt55 = next(c for c in completions if c.text == "gpt-5.5")
+        assert gpt55.display_text == "OpenAI · gpt-5.5"
+        assert gpt55.display_meta_text == "42 models"
+
+    def test_model_completions_prefer_coding_plan_preview_hits(self, monkeypatch):
+        """Short /model queries should stay on the preview path and rank codex first."""
+        import hermes_cli.commands as commands
         from hermes_cli.commands import SlashCommandCompleter
-        from hermes_cli.model_switch import DirectAlias
         import hermes_cli.model_switch as ms
+        import hermes_cli.models as models
 
-        test_aliases = {
-            "opus": DirectAlias("claude-opus-4-6", "anthropic", ""),
-            "qwen": DirectAlias("qwen3.5:397b", "custom", "https://ollama.com/v1"),
-        }
-        monkeypatch.setattr(ms, "DIRECT_ALIASES", test_aliases)
+        monkeypatch.setattr(commands, "_lmstudio_completion_models", lambda: [])
+        monkeypatch.setattr(
+            ms,
+            "list_authenticated_providers",
+            lambda **kwargs: [
+                {
+                    "slug": "openai",
+                    "name": "OpenAI",
+                    "plan": "api",
+                    "total_models": 42,
+                    "models": ["gpt-5.4", "gpt-5.4-mini", "gpt-4.1"],
+                    "source": "built-in",
+                    "is_current": False,
+                    "is_user_defined": False,
+                },
+                {
+                    "slug": "openai-codex",
+                    "name": "OpenAI Codex",
+                    "plan": "coding",
+                    "total_models": 7,
+                    "models": ["gpt-5.5", "gpt-5.4-mini", "gpt-5.4"],
+                    "source": "hermes",
+                    "is_current": False,
+                    "is_user_defined": False,
+                },
+            ],
+        )
+        monkeypatch.setattr(
+            models,
+            "provider_model_ids",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("preview path should not fetch live catalogs")),
+        )
 
         completer = SlashCommandCompleter()
-        completions = list(completer._model_completions("o", "o"))
+        completions = list(completer._model_completions("gpt", "gpt"))
 
-        names = [c.text for c in completions]
-        assert "opus" in names
-        assert "qwen" not in names
+        texts = [c.text for c in completions]
+        assert texts[0] == "gpt-5.5"
+        assert completions[0].display_text == "OpenAI Codex · gpt-5.5"
+        assert "gpt-5.4-mini" in texts
+        assert "gpt-4.1" in texts
+        assert all(text.startswith("gpt-") for text in texts)
+        assert "gpt5" not in texts
 
-    def test_model_completions_shows_metadata(self, monkeypatch):
-        """Completions include model name and provider in display_meta."""
+    def test_provider_alias_uses_same_completion_path(self, monkeypatch):
+        """/provider should reuse the same live model completion path as /model."""
+        from prompt_toolkit.completion import CompleteEvent
+        from prompt_toolkit.document import Document
         from hermes_cli.commands import SlashCommandCompleter
-        from hermes_cli.model_switch import DirectAlias
+        import hermes_cli.commands as commands
         import hermes_cli.model_switch as ms
+        import hermes_cli.models as models
 
-        test_aliases = {
-            "glm": DirectAlias("glm-4.7", "custom", "https://ollama.com/v1"),
-        }
-        monkeypatch.setattr(ms, "DIRECT_ALIASES", test_aliases)
+        monkeypatch.setattr(commands, "_lmstudio_completion_models", lambda: [])
+        monkeypatch.setattr(
+            ms,
+            "list_authenticated_providers",
+            lambda **kwargs: [
+                {
+                    "slug": "openai",
+                    "name": "OpenAI",
+                    "total_models": 42,
+                    "source": "built-in",
+                    "is_current": False,
+                    "is_user_defined": False,
+                },
+            ],
+        )
+        monkeypatch.setattr(
+            models,
+            "provider_model_ids",
+            lambda provider, **kwargs: ["gpt-5.5"] if provider == "openai" else [],
+        )
 
-        completer = SlashCommandCompleter()
-        completions = list(completer._model_completions("g", "g"))
+        def completions_for(text: str):
+            return list(
+                SlashCommandCompleter().get_completions(
+                    Document(text=text),
+                    CompleteEvent(completion_requested=True),
+                )
+            )
 
-        assert len(completions) >= 1
-        glm_comp = [c for c in completions if c.text == "glm"][0]
-        meta_str = str(glm_comp.display_meta)
-        assert "glm-4.7" in meta_str
-        assert "custom" in meta_str
+        model_texts = [c.text for c in completions_for("/model gpt")]
+        provider_texts = [c.text for c in completions_for("/provider gpt")]
+
+        assert model_texts == ["gpt-5.5"]
+        assert provider_texts == model_texts
 
 
 # ---------------------------------------------------------------------------

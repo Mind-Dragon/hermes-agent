@@ -163,6 +163,30 @@ class TestOllamaCloudModelPicker:
         assert ollama is not None, "ollama-cloud should appear when OLLAMA_API_KEY is set"
         assert ollama["total_models"] > 0, "ollama-cloud should show non-zero model count"
 
+    def test_zai_coding_plan_rows_are_marked(self, tmp_path, monkeypatch):
+        """Z.AI coding endpoints should be tagged so the picker can rank them first."""
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("GLM_API_KEY", "test-key")
+
+        mock_mdev = {
+            "zai": {
+                "name": "Z.AI",
+                "models": {
+                    "glm-5.1": {},
+                    "glm-4.7": {},
+                },
+            }
+        }
+        with patch("hermes_cli.auth.get_auth_status", return_value={"logged_in": True, "base_url": "https://api.z.ai/api/coding/paas/v4"}), \
+             patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+            providers = list_authenticated_providers(current_provider="zai")
+
+        zai = next((p for p in providers if p["slug"] == "zai"), None)
+        assert zai is not None
+        assert zai["plan"] == "coding"
+
     def test_ollama_cloud_not_shown_without_creds(self, monkeypatch):
         """Ollama Cloud should not appear without credentials."""
         from hermes_cli.model_switch import list_authenticated_providers

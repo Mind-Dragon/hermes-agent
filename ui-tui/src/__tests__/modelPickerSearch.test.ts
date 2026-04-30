@@ -39,9 +39,61 @@ describe('model picker search ranking', () => {
     expect(filterRankProviders('gpt55', providers, labels).map(row => row.provider.slug)).toEqual(['openrouter'])
   })
 
+  it('prefers coding-plan providers when model matches tie', () => {
+    const rows = filterRankProviders('gpt55', [
+      { name: 'OpenAI', slug: 'openai', plan: 'api', models: ['openai/gpt-5.5'] },
+      { name: 'OpenAI Codex', slug: 'openai-codex', plan: 'coding', models: ['openai/gpt-5.5'] },
+      { name: 'Nous Portal', slug: 'nous', plan: 'api', models: ['moonshotai/kimi-k2.5'] }
+    ], ['OpenAI', 'OpenAI Codex', 'Nous Portal'])
+
+    expect(rows.map(row => row.provider.slug)).toEqual(['openai-codex', 'openai'])
+  })
+
+  it('prefers coding-plan providers for broad gpt queries', () => {
+    const rows = filterRankProviders('gpt', [
+      { name: 'OpenAI', slug: 'openai', plan: 'api', models: ['gpt-5.4'] },
+      { name: 'OpenAI Codex', slug: 'openai-codex', plan: 'coding', models: ['gpt-5.5'] },
+      { name: 'GitHub Copilot', slug: 'copilot', plan: 'api', models: ['gpt-5.4'] }
+    ], ['OpenAI', 'OpenAI Codex', 'GitHub Copilot'])
+
+    expect(rows.map(row => row.provider.slug).slice(0, 2)).toEqual(['openai-codex', 'copilot'])
+  })
+
+  it('sorts models alphabetically with numeric versions first', () => {
+    const models = [
+      'openai/gpt-4o',
+      'openai/gpt-4.1-nano',
+      'openai/gpt-5.5',
+      'openai/gpt-4.1-mini'
+    ]
+
+    expect(filterRankModels('', models).map(row => row.model)).toEqual([
+      'openai/gpt-5.5',
+      'openai/gpt-4.1-mini',
+      'openai/gpt-4.1-nano',
+      'openai/gpt-4o'
+    ])
+  })
+
+  it('prefers higher gpt versions for broad gpt queries', () => {
+    const models = [
+      'openai/gpt-5-pro',
+      'openai/gpt-5.2-pro',
+      'openai/gpt-5.4-pro',
+      'openai/gpt-5.5-pro'
+    ]
+
+    expect(filterRankModels('gpt', models).map(row => row.model)).toEqual([
+      'openai/gpt-5.5-pro',
+      'openai/gpt-5.4-pro',
+      'openai/gpt-5.2-pro',
+      'openai/gpt-5-pro'
+    ])
+  })
+
   it('surfaces the matching model name for provider rows when the query matches a model id', () => {
     const gptProviders = [
-      { name: 'OpenAI', slug: 'openai', models: ['gpt-4o-mini', 'o3-mini'] },
+      { name: 'OpenAI', slug: 'openai', models: ['gpt-4.1-mini', 'o3-mini'] },
       { name: 'OpenRouter', slug: 'openrouter', models: ['openai/gpt-5.5', 'moonshotai/kimi-k2.5'] },
       { name: 'Anthropic', slug: 'anthropic', models: ['claude-3.7-sonnet'] }
     ]
@@ -49,7 +101,7 @@ describe('model picker search ranking', () => {
     const rows = filterRankProviders('gpt', gptProviders, gptLabels)
 
     expect(rows.map(row => row.provider.slug)).toEqual(['openai', 'openrouter'])
-    expect((rows[0] as any).modelMatch).toBe('gpt-4o-mini')
+    expect((rows[0] as any).modelMatch).toBe('gpt-4.1-mini')
     expect((rows[1] as any).modelMatch).toBe('openai/gpt-5.5')
   })
 

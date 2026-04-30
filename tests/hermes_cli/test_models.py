@@ -295,6 +295,11 @@ class TestDetectProviderForModel:
         with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
             assert detect_provider_for_model("nonexistent-model-xyz", "openai-codex") is None
 
+    def test_plan_provider_beats_aggregator_for_gpt_55(self):
+        """A direct plan provider should beat aggregators for ambiguous OpenAI model names."""
+        result = detect_provider_for_model("gpt-5.5", "openrouter")
+        assert result == ("openai-codex", "gpt-5.5")
+
     def test_aggregator_not_suggested(self):
         """nous/openrouter should never be auto-suggested as target provider."""
         with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
