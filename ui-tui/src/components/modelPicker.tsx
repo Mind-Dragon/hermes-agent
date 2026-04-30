@@ -8,6 +8,7 @@ import type { ModelOptionProvider, ModelOptionsResponse } from '../gatewayTypes.
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { filterRankModels, filterRankProviders } from '../lib/modelPickerSearch.js'
 import type { RankedModel } from '../lib/modelPickerSearch.js'
+import { selectedModelForEnter, selectedProviderForEnter, selectedProviderIndexForEnter } from '../lib/modelPickerSelection.js'
 import type { Theme } from '../theme.js'
 
 import { OverlayHint, useOverlayKeys, windowItems, windowOffset } from './overlayControls.js'
@@ -202,12 +203,13 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
 
     if (key.return) {
       if (stage === 'provider') {
-        const nextProvider = providers[providerIdx] ?? selectedProviderRow?.provider
+        const nextProvider = selectedProviderForEnter(providerRows, providerFilteredIdx)
 
         if (!nextProvider) {
           return
         }
 
+        setProviderIdx(selectedProviderIndexForEnter(providerRows, providerFilteredIdx, providerIdx))
         setStage('model')
         setQuery('')
         setModelIdx(0)
@@ -215,7 +217,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
         return
       }
 
-      const model = models[modelIdx]
+      const model = selectedModelForEnter(modelRows, modelFilteredIdx)
 
       if (provider && model) {
         onSelect(`${model} --provider ${provider.slug}${persistGlobal ? ' --global' : ` ${TUI_SESSION_MODEL_FLAG}`}`)
