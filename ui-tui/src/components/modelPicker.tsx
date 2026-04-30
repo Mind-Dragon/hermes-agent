@@ -292,7 +292,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
   if (stage === 'provider') {
     const rows = providerRows.map(row => ({
       row,
-      text: `${row.provider.is_current ? '*' : ' '} ${row.label} · ${row.provider.total_models ?? row.provider.models?.length ?? 0} models`
+      text: `${row.provider.is_current ? '*' : ' '} ${row.label}${row.modelMatch ? ` · ${row.modelMatch}` : ''} · ${row.provider.total_models ?? row.provider.models?.length ?? 0} models`
     }))
     const { items, offset } = windowItems(rows, providerFilteredIdx, VISIBLE)
     const matchText = query ? `Filter: ${query} · ${providerRows.length} match${providerRows.length === 1 ? '' : 'es'}` : 'Type to filter · Enter to continue'

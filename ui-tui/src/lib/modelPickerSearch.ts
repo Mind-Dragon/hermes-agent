@@ -11,6 +11,7 @@ export interface RankedModel {
 export interface RankedProvider {
   index: number
   label: string
+  modelMatch?: string
   provider: ModelOptionProvider
   score: MatchScore
 }
@@ -151,11 +152,13 @@ export function filterRankProviders(query: string, providers: ModelOptionProvide
       const label = labels[index] ?? provider.name
       const directFields = [label, provider.name, provider.slug, provider.warning ?? '']
       const directScore: MatchScore | null = trimmed ? rankText(trimmed, directFields) : [0, 0, 0]
-      const modelScore = trimmed && provider.models?.length ? rankText(trimmed, provider.models) : null
+      const modelRows = trimmed && provider.models?.length ? filterRankModels(trimmed, provider.models) : []
+      const modelScore = modelRows[0]?.score ?? null
+      const modelMatch = modelRows[0]?.model
       const boostedModelScore: MatchScore | null = modelScore ? [modelScore[0] + 1, modelScore[1], modelScore[2]] : null
       const score: MatchScore | null = trimmed ? bestScore(directScore, boostedModelScore) : directScore
 
-      return score ? { index, label, provider, score } : null
+      return score ? { index, label, modelMatch, provider, score } : null
     })
     .filter((row): row is RankedProvider => Boolean(row))
 

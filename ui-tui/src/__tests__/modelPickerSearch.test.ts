@@ -39,6 +39,20 @@ describe('model picker search ranking', () => {
     expect(filterRankProviders('gpt55', providers, labels).map(row => row.provider.slug)).toEqual(['openrouter'])
   })
 
+  it('surfaces the matching model name for provider rows when the query matches a model id', () => {
+    const gptProviders = [
+      { name: 'OpenAI', slug: 'openai', models: ['gpt-4o-mini', 'o3-mini'] },
+      { name: 'OpenRouter', slug: 'openrouter', models: ['openai/gpt-5.5', 'moonshotai/kimi-k2.5'] },
+      { name: 'Anthropic', slug: 'anthropic', models: ['claude-3.7-sonnet'] }
+    ]
+    const gptLabels = ['OpenAI', 'OpenRouter', 'Anthropic']
+    const rows = filterRankProviders('gpt', gptProviders, gptLabels)
+
+    expect(rows.map(row => row.provider.slug)).toEqual(['openai', 'openrouter'])
+    expect((rows[0] as any).modelMatch).toBe('gpt-4o-mini')
+    expect((rows[1] as any).modelMatch).toBe('openai/gpt-5.5')
+  })
+
   it('ranks model prefix before substring before fuzzy subsequence', () => {
     const rows = filterRankModels('kimi', ['openai/not-kimi', 'kimi-k2.6-FCED', 'k-x-i-m-i-test'])
 
