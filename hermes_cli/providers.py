@@ -522,6 +522,39 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
     return "chat_completions"
 
 
+_CODING_PLAN_PROVIDER_IDS = frozenset({
+    "openai-codex",
+    "stepfun",
+    "alibaba-coding-plan",
+    "minimax-oauth",
+})
+
+_CODING_PLAN_URL_HINTS = (
+    "/backend-api/codex",
+    "/codex",
+    "/coding",
+    "/api/coding/",
+    "/step_plan/",
+    "coding-intl.dashscope.aliyuncs.com",
+)
+
+
+def provider_plan_kind(provider_id: str, base_url: str = "") -> str:
+    """Return ``coding`` when the provider/endpoint is a coding plan.
+
+    The picker uses this as a sort hint so coding-plan providers float above
+    API-plan providers when the model match quality is otherwise equal.
+    """
+    canonical = normalize_provider(provider_id)
+    url = (base_url or "").strip().lower()
+
+    if url and any(hint in url for hint in _CODING_PLAN_URL_HINTS):
+        return "coding"
+    if canonical in _CODING_PLAN_PROVIDER_IDS:
+        return "coding"
+    return "api"
+
+
 # -- Provider from user config ------------------------------------------------
 
 def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[ProviderDef]:

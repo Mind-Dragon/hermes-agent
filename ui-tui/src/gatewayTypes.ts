@@ -308,6 +308,7 @@ export interface ModelOptionProvider {
   key_env?: string
   models?: string[]
   name: string
+  plan?: string
   slug: string
   total_models?: number
   warning?: string
