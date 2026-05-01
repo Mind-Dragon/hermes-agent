@@ -331,13 +331,30 @@ atexit.register(_shutdown_sessions)
 # ── Plumbing ──────────────────────────────────────────────────────────
 
 
+def _is_usable_session_db(db) -> bool:
+    return (
+        db is not None
+        and callable(getattr(db, "list_sessions_rich", None))
+        and callable(getattr(db, "end_session", None))
+        and callable(getattr(db, "get_session", None))
+    )
+
+
 def _get_db():
     global _db, _db_error
+    if _db is not None and not _is_usable_session_db(_db):
+        logger.debug("Discarding invalid cached SessionDB instance: %r", type(_db))
+        _db = None
     if _db is None:
         from hermes_state import SessionDB
 
         try:
-            _db = SessionDB()
+            candidate = SessionDB()
+            if not _is_usable_session_db(candidate):
+                logger.debug("Discarding invalid SessionDB instance: %r", type(candidate))
+                _db_error = "state.db unavailable"
+                return None
+            _db = candidate
             _db_error = None
         except Exception as exc:
             _db_error = str(exc)

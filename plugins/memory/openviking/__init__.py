@@ -324,7 +324,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 account=self._account, user=self._user, agent=self._agent,
             )
             if not self._client.health():
-                logger.warning("OpenViking server at %s is not reachable", self._endpoint)
+                logger.debug("OpenViking server at %s is not reachable", self._endpoint)
                 self._client = None
         except ImportError:
             logger.warning("httpx not installed — OpenViking plugin disabled")
