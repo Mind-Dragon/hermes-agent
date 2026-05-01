@@ -996,7 +996,7 @@ def list_authenticated_providers(
     """Detect which providers have credentials and list their curated models.
 
     Uses the curated model lists from hermes_cli/models.py (OPENROUTER_MODELS,
-    _PROVIDER_MODELS) — NOT the full models.dev catalog.  These are hand-picked
+    _PROVIDER_MODELS) — NOT the full models.dev catalog. These are hand-picked
     agentic models that work well as agent backends.
 
     Returns a list of dicts, each with:
@@ -1010,7 +1010,9 @@ def list_authenticated_providers(
 
     Only includes providers that have API keys set or are user-defined endpoints.
     """
+
     import os
+
     from agent.models_dev import (
         PROVIDER_TO_MODELS_DEV,
         fetch_models_dev,
@@ -1018,13 +1020,17 @@ def list_authenticated_providers(
     )
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.models import (
-        OPENROUTER_MODELS, _PROVIDER_MODELS,
-        _MODELS_DEV_PREFERRED, _merge_with_models_dev, provider_model_ids,
+        OPENROUTER_MODELS,
+        _MODELS_DEV_PREFERRED,
+        _PROVIDER_MODELS,
+        _merge_with_models_dev,
+        provider_model_ids,
     )
 
     results: List[dict] = []
-    seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
-    seen_mdev_ids: set = set()  # prevent duplicate entries for aliases (e.g. kimi-coding + kimi-coding-cn)
+    seen_slugs: set[str] = set()
+    seen_mdev_ids: set[str] = set()
+
     # Effective base URLs of every built-in row we emit (normalized lower+rstrip).
     # Section 4 uses this to hide ``custom_providers`` entries that point at the
     # same endpoint as a built-in (e.g. a user-defined "my-dashscope" on
@@ -1056,6 +1062,35 @@ def list_authenticated_providers(
         normed = _norm_url(url)
         if normed:
             _builtin_endpoints.add(normed)
+
+    suppressed_builtin_slugs: set[str] = set()
+    preferred_custom_labels: set[str] = set()
+
+    def _register_custom_label(name: str) -> None:
+        raw = str(name or "").strip().lower()
+        if not raw:
+            return
+        preferred_custom_labels.add(raw)
+        try:
+            from hermes_cli.providers import custom_provider_slug
+
+            slug = custom_provider_slug(str(name or "")).strip().lower()
+            preferred_custom_labels.add(slug)
+            if slug.startswith("custom:"):
+                preferred_custom_labels.add(slug.removeprefix("custom:"))
+        except Exception:
+            pass
+
+    if isinstance(user_providers, dict):
+        for _ep_name, _ep_cfg in user_providers.items():
+            if not isinstance(_ep_cfg, dict):
+                continue
+            _register_custom_label(_ep_cfg.get("name", "") or _ep_name)
+    if isinstance(custom_providers, list):
+        for _entry in custom_providers:
+            if not isinstance(_entry, dict):
+                continue
+            _register_custom_label(_entry.get("name", ""))
 
     data = fetch_models_dev()
 

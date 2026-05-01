@@ -42,6 +42,9 @@ describe('createSlashHandler', () => {
       session_id: 'sid-abc',
       value: 'x-model'
     })
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('model → x-model')
+    })
   })
 
   it('honors TUI picker session scope without adding --global', async () => {

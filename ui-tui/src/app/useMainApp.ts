@@ -7,10 +7,12 @@ import { FULL_RENDER_TAIL_ITEMS, MAX_HISTORY, WHEEL_SCROLL_STEP } from '../confi
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
 import { fmtCwdBranch, shortCwd } from '../domain/paths.js'
+import { modelValueForConfigSet } from '../domain/slash.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type {
   ClarifyRespondResponse,
   ClipboardPasteResponse,
+  ConfigSetResponse,
   GatewayEvent,
   TerminalResizeResponse
 } from '../gatewayTypes.js'
@@ -698,9 +700,39 @@ export function useMainApp(gw: GatewayClient) {
   )
 
   const onModelSelect = useCallback((value: string) => {
+    if (session.guardBusySessionSwitch('change models')) {
+      return
+    }
+
     patchOverlayState({ modelPicker: false })
-    slashRef.current(`/model ${value}`)
-  }, [])
+
+    if (!ui.sid) {
+      return
+    }
+
+    void rpc<ConfigSetResponse>('config.set', {
+      key: 'model',
+      session_id: ui.sid,
+      value: modelValueForConfigSet(value)
+    }).then(r => {
+      if (!r) {
+        return
+      }
+
+      if (!r.value) {
+        sys('error: invalid response: model switch')
+        return
+      }
+
+      sys(`model → ${r.value}`)
+      maybeWarn(r)
+
+      patchUiState(state => ({
+        ...state,
+        info: state.info ? { ...state.info, model: r.value! } : { model: r.value!, skills: {}, tools: {} }
+      }))
+    })
+  }, [maybeWarn, rpc, session.guardBusySessionSwitch, sys, ui.sid])
 
   const hasReasoning = useTurnSelector(state => Boolean(state.reasoning.trim()))
 
