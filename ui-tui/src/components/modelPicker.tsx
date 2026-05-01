@@ -21,6 +21,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
   const [currentModel, setCurrentModel] = useState('')
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(true)
+  const [cacheRefreshing, setCacheRefreshing] = useState(false)
   const [persistGlobal, setPersistGlobal] = useState(false)
   const [providerIdx, setProviderIdx] = useState(0)
   const [modelIdx, setModelIdx] = useState(0)
@@ -51,6 +52,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
         const next = r.providers ?? []
         setProviders(next)
         setCurrentModel(String(r.model ?? ''))
+        setCacheRefreshing(Boolean(r.refreshing))
         setProviderIdx(
           Math.max(
             0,
@@ -282,7 +284,9 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
   if (!providers.length) {
     return (
       <Box flexDirection="column">
-        <Text color={t.color.muted}>no providers available</Text>
+        <Text color={t.color.muted}>
+          {cacheRefreshing ? 'model catalog cache warming; try again in a moment' : 'no providers available'}
+        </Text>
         <OverlayHint t={t}>Esc/q cancel</OverlayHint>
       </Box>
     )

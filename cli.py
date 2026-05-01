@@ -5602,7 +5602,7 @@ class HermesCLI:
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
         """
-        from hermes_cli.model_switch import switch_model, parse_model_flags, list_authenticated_providers
+        from hermes_cli.model_switch import switch_model, parse_model_flags
         from hermes_cli.providers import get_label
 
         # Parse args from the original command
@@ -5629,7 +5629,21 @@ class HermesCLI:
             provider_display = get_label(self.provider) if self.provider else "unknown"
 
             try:
-                providers = list_authenticated_providers(
+                from hermes_cli.model_picker_catalog_cache import (
+                    get_model_picker_catalog_status,
+                    get_model_picker_providers_cached,
+                )
+
+                providers = get_model_picker_providers_cached(
+                    current_provider=self.provider or "",
+                    current_base_url=self.base_url or "",
+                    current_model=self.model or "",
+                    user_providers=user_provs,
+                    custom_providers=custom_provs,
+                    max_models=50,
+                    background=True,
+                )
+                cache_status = get_model_picker_catalog_status(
                     current_provider=self.provider or "",
                     current_base_url=self.base_url or "",
                     current_model=self.model or "",
@@ -5639,9 +5653,13 @@ class HermesCLI:
                 )
             except Exception:
                 providers = []
+                cache_status = {"refreshing": False, "cached": False}
 
             if not providers:
-                _cprint("  No authenticated providers found.")
+                if cache_status.get("refreshing"):
+                    _cprint("  Model catalog cache is warming up — try /model again in a moment.")
+                else:
+                    _cprint("  No authenticated providers found.")
                 _cprint("")
                 _cprint("  /model <name>                        switch model")
                 _cprint("  /model --provider <slug>             switch provider")

@@ -314,9 +314,11 @@ export interface ModelOptionProvider {
 }
 
 export interface ModelOptionsResponse {
+  cached?: boolean
   model?: string
   provider?: string
   providers?: ModelOptionProvider[]
+  refreshing?: boolean
 }
 
 // ── MCP ──────────────────────────────────────────────────────────────

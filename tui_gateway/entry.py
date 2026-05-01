@@ -197,6 +197,16 @@ def main():
         _log_exit("startup write failed (broken stdout pipe before first event)")
         sys.exit(0)
 
+    # Warm the /model picker cache after the ready event so startup stays fast.
+    # The refresh runs in a daemon thread; model.options renders stale/disk rows
+    # immediately and never performs live catalog discovery on the UI path.
+    try:
+        from hermes_cli.model_picker_catalog_cache import prime_model_picker_catalog_cache
+
+        prime_model_picker_catalog_cache()
+    except Exception:
+        pass
+
     for raw in sys.stdin:
         line = raw.strip()
         if not line:

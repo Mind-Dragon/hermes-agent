@@ -4732,7 +4732,11 @@ def _(rid, params: dict) -> dict:
 @method("model.options")
 def _(rid, params: dict) -> dict:
     try:
-        from hermes_cli.model_switch import list_authenticated_providers
+        from hermes_cli.config import get_compatible_custom_providers
+        from hermes_cli.model_picker_catalog_cache import (
+            get_model_picker_catalog_status,
+            get_model_picker_providers_cached,
+        )
         from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_LABELS
 
         session = _sessions.get(params.get("session_id", ""))
@@ -4741,21 +4745,25 @@ def _(rid, params: dict) -> dict:
         current_provider = getattr(agent, "provider", "") or ""
         current_model = getattr(agent, "model", "") or _resolve_model()
         current_base_url = getattr(agent, "base_url", "") or ""
-        # list_authenticated_providers already populates each provider's
-        # "models" with the curated list (same source as `hermes model` and
-        # classic CLI's /model picker). Do NOT overwrite with live
-        # provider_model_ids() — that bypasses curation and pulls in
-        # non-agentic models (e.g. Nous /models returns ~400 IDs including
-        # TTS, embeddings, rerankers, image/video generators).
-        user_provs = (
-            cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
+
+        user_provs = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
+        custom_provs = get_compatible_custom_providers(cfg)
+        if not isinstance(custom_provs, list):
+            custom_provs = []
+
+        # Serve stale/disk catalog rows immediately and refresh live catalogs in
+        # the background. Do NOT call list_authenticated_providers() here: picker
+        # open must not block on provider /models fanout.
+        authenticated = get_model_picker_providers_cached(
+            current_provider=current_provider,
+            current_base_url=current_base_url,
+            current_model=current_model,
+            user_providers=user_provs,
+            custom_providers=custom_provs,
+            max_models=50,
+            background=True,
         )
-        custom_provs = (
-            cfg.get("custom_providers")
-            if isinstance(cfg.get("custom_providers"), list)
-            else []
-        )
-        authenticated = list_authenticated_providers(
+        cache_status = get_model_picker_catalog_status(
             current_provider=current_provider,
             current_base_url=current_base_url,
             current_model=current_model,
@@ -4764,9 +4772,9 @@ def _(rid, params: dict) -> dict:
             max_models=50,
         )
 
-        # Mark authenticated providers and build lookup by slug
+        # Mark authenticated providers and build lookup by slug.
         authed_map: dict = {}
-        authed_extra: list = []  # user-defined/custom not in CANONICAL_PROVIDERS
+        authed_extra: list = []
         canonical_slugs = {e.slug for e in CANONICAL_PROVIDERS}
         for p in authenticated:
             p["authenticated"] = True
@@ -4774,7 +4782,6 @@ def _(rid, params: dict) -> dict:
             if p["slug"] not in canonical_slugs:
                 authed_extra.append(p)
 
-        # Build final list in CANONICAL_PROVIDERS order, merging auth data
         from hermes_cli.auth import PROVIDER_REGISTRY as _auth_reg
         ordered: list = []
         for entry in CANONICAL_PROVIDERS:
@@ -4802,7 +4809,6 @@ def _(rid, params: dict) -> dict:
                     "warning": warning,
                 })
 
-        # Append user-defined/custom providers not in canonical list
         ordered.extend(authed_extra)
 
         return _ok(
@@ -4811,6 +4817,8 @@ def _(rid, params: dict) -> dict:
                 "providers": ordered,
                 "model": current_model,
                 "provider": current_provider,
+                "refreshing": cache_status.get("refreshing", False),
+                "cached": cache_status.get("cached", False),
             },
         )
     except Exception as e:
@@ -4868,18 +4876,14 @@ def _(rid, params: dict) -> dict:
         current_model = getattr(agent, "model", "") or _resolve_model()
         current_base_url = getattr(agent, "base_url", "") or ""
 
+        user_providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
+        custom_providers = cfg.get("custom_providers") if isinstance(cfg.get("custom_providers"), list) else []
         providers = list_authenticated_providers(
             current_provider=current_provider,
             current_base_url=current_base_url,
             current_model=current_model,
-            user_providers=(
-                cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
-            ),
-            custom_providers=(
-                cfg.get("custom_providers")
-                if isinstance(cfg.get("custom_providers"), list)
-                else []
-            ),
+            user_providers=user_providers,
+            custom_providers=custom_providers,
             max_models=50,
         )
 
