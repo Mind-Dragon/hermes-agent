@@ -2532,7 +2532,7 @@ def _normalize_custom_provider_entry(
     _KNOWN_KEYS = {
         "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env",
         "api_mode", "transport", "model", "default_model", "models",
-        "context_length", "rate_limit_delay",
+        "discover_models", "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
     }
     for camel, snake in _CAMEL_ALIASES.items():
