@@ -715,6 +715,10 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["require_mention"] = platform_cfg["require_mention"]
                 if "free_response_channels" in platform_cfg:
                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
+                if "trigger_phrase" in platform_cfg:
+                    bridged["trigger_phrase"] = platform_cfg["trigger_phrase"]
+                if "trigger_phrases" in platform_cfg:
+                    bridged["trigger_phrases"] = platform_cfg["trigger_phrases"]
                 if "mention_patterns" in platform_cfg:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
                 if "dm_policy" in platform_cfg:
