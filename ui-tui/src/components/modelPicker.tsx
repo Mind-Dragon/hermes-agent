@@ -569,7 +569,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
               wrap="truncate-end"
             >
               {providerIdx === idx ? '▸ ' : '  '}
-              {idx + 1}. {item.text}
+              {i + 1}. {item.text}
             </Text>
           )
         })}
@@ -642,7 +642,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
             wrap="truncate-end"
           >
             {prefix}
-            {idx + 1}. {row}
+            {i + 1}. {row}
           </Text>
         )
       })}
