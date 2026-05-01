@@ -1602,4 +1602,12 @@ def list_authenticated_providers(
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
+    # Tag coding-plan providers so the picker can surface them differently
+    from hermes_cli.providers import provider_plan_kind
+    for r in results:
+        r["plan"] = provider_plan_kind(
+            r.get("slug", ""),
+            r.get("api_url", "") or r.get("base_url", ""),
+        )
+
     return results
